@@ -42,6 +42,15 @@ jobs:
                      CODE_SIGNING_ALLOWED=NO \
                      build
 
+      - name: Run contract tests
+        run: |
+          xcodebuild -project SimulatorCamera.xcodeproj \
+                     -scheme SimulatorCamera \
+                     -configuration Debug \
+                     -destination 'platform=macOS' \
+                     CODE_SIGNING_ALLOWED=NO \
+                     test
+
   lint:
     name: SwiftLint
     runs-on: macos-15

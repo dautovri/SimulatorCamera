@@ -3,7 +3,7 @@
 //  simcamctl
 //
 //  Command-line control for SimulatorCamera. Talks to the running extension
-//  via XPC. Subcommands match SimCam's simcamctl shape:
+//  via CoreMediaIO. Subcommands match SimCam's simcamctl shape:
 //
 //    simcamctl status
 //    simcamctl ping
@@ -11,7 +11,7 @@
 //    simcamctl set-source --qr "PAYLOAD"
 //    simcamctl set-source --image /path/to/file.png
 //
-//  Exit codes: 0 success, 1 generic error, 2 XPC failure, 3 invalid args.
+//  Exit codes: 0 success, 1 generic error, 2 extension unreachable, 3 invalid args.
 //
 
 import Foundation
@@ -28,7 +28,7 @@ func usage() -> Never {
 
     SUBCOMMANDS:
       status                       Print extension state + frame stats
-      ping                         Verify the extension is running
+      ping                         Verify the virtual camera is registered
       set-source --pattern         Use the built-in test pattern
       set-source --qr "PAYLOAD"    Generate + stream a QR code
       set-source --image PATH      Stream a static PNG/JPG file
@@ -40,10 +40,12 @@ func usage() -> Never {
     EXIT CODES:
       0    success
       1    generic error
-      2    XPC failure (extension not running?)
+      2    extension not reachable (not activated?)
       3    invalid arguments
 
-    The container app must be installed and the extension activated. If status
+    The container app must be installed and the extension activated. Frame pushes
+    (--qr, --image) open the camera's sink stream and may trigger a one-time
+    camera-access prompt for your terminal. If status
     shows the extension is inactive, run /Applications/SimulatorCamera.app to
     activate it.
     """

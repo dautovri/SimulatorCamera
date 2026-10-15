@@ -10,6 +10,7 @@
 //  Layout must match SimulatorInjection/SCFrameStore.h.
 //
 
+import CoreVideo
 import Foundation
 
 final class FrameStore: @unchecked Sendable {
@@ -69,11 +70,14 @@ final class FrameStore: @unchecked Sendable {
         p.storeBytes(of: seq, toByteOffset: 24, as: UInt64.self)
     }
 
-    func write(_ frame: SimCamFrame, sourceKind: UInt32) {
-        frame.bgraData.withUnsafeBytes { raw in
-            guard let ptr = raw.baseAddress else { return }
-            write(width: frame.width, height: frame.height, bytesPerRow: frame.bytesPerRow,
-                  bgra: ptr, sourceKind: sourceKind, time: Date().timeIntervalSince1970) // wall clock: readers drop frames >3 s old
-        }
+    func write(_ pixelBuffer: CVPixelBuffer, sourceKind: UInt32) {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else { return }
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return }
+        // Wall clock: readers drop frames more than 3 s old.
+        write(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer),
+              bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer), bgra: base,
+              sourceKind: sourceKind, time: Date().timeIntervalSince1970)
     }
 }

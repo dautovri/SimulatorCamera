@@ -4,7 +4,12 @@
 //
 //  Common shape for everything that produces frames in the container app:
 //  Mac camera, video file, static image, QR generator. SourceManager owns
-//  the active one and pumps its frames into XPCClient.
+//  the active one and pumps its frames into CameraLink.
+//
+//  Every source hands the manager a canonical 1280x720 BGRA, IOSurface-
+//  backed CVPixelBuffer; the FrameNormalizer below does the letterboxing /
+//  rotation / format conversion once, with a reusable CIContext and
+//  pixel-buffer pool, instead of each source improvising its own conversion.
 //
 
 import Foundation
@@ -14,7 +19,7 @@ import CoreMedia
 import CoreVideo
 
 protocol FrameSource: AnyObject {
-    /// Kind reported to the extension via XPC setSource.
+    /// Kind reported to the extension.
     var kind: SimCamSourceKind { get }
 
     /// Start producing frames. Throw if hardware/file fails to open.
@@ -23,8 +28,9 @@ protocol FrameSource: AnyObject {
     /// Stop producing frames. Idempotent.
     func stop()
 
-    /// Hook the SourceManager registers. Called on a background queue.
-    var onFrame: ((SimCamFrame) -> Void)? { get set }
+    /// Hook the SourceManager registers. Called on a background queue with
+    /// a canonical pixel buffer.
+    var onFrame: ((CVPixelBuffer) -> Void)? { get set }
 }
 
 /// Errors a source can throw on start.
@@ -42,55 +48,73 @@ enum FrameSourceError: LocalizedError {
     }
 }
 
-/// Convert a CVPixelBuffer to BGRA Data + a SimCamFrame.
-/// Handles the row-padding + format-conversion path.
-@inline(__always)
-func makeSimCamFrame(from pixelBuffer: CVPixelBuffer, timestamp: Double) -> SimCamFrame? {
-    let width = CVPixelBufferGetWidth(pixelBuffer)
-    let height = CVPixelBufferGetHeight(pixelBuffer)
-    let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+/// Converts arbitrary pixel buffers into canonical ones.
+///
+/// Thread-safety: one instance per source; sources call it from a single
+/// capture / decode thread. CIContext and CVPixelBufferPool are themselves
+/// thread-safe, so sharing an instance across threads is also fine.
+final class FrameNormalizer {
 
-    // Fast path: already BGRA, just copy the bytes.
-    if format == kCVPixelFormatType_32BGRA {
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
-        let rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        let data = Data(bytes: base, count: rowBytes * height)
-        return SimCamFrame(
-            width: width,
-            height: height,
-            bytesPerRow: rowBytes,
-            timestampSeconds: timestamp,
-            bgraData: data
+    private let context = CIContext(options: [.cacheIntermediates: false])
+    private let pool = FrameRaster.makePool()
+    private let canonicalExtent = CGRect(
+        x: 0, y: 0,
+        width: kSimCamFrameWidth, height: kSimCamFrameHeight
+    )
+
+    /// Return a canonical pixel buffer for `pixelBuffer`. `transform` is
+    /// applied first (video preferredTransform); the result is aspect-fit
+    /// onto a black canonical canvas. Already-canonical BGRA buffers are
+    /// returned as-is (zero copy).
+    func canonicalize(
+        _ pixelBuffer: CVPixelBuffer,
+        transform: CGAffineTransform = .identity
+    ) -> CVPixelBuffer? {
+        if transform.isIdentity, SimCamFrameCheck.problem(with: pixelBuffer) == nil {
+            return pixelBuffer
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        guard width > 0, height > 0 else { return nil }
+
+        var image = CIImage(cvPixelBuffer: pixelBuffer)
+        if !transform.isIdentity {
+            image = image.transformed(by: transform)
+            // Move the rotated image back to the origin.
+            image = image.transformed(by: CGAffineTransform(
+                translationX: -image.extent.origin.x,
+                y: -image.extent.origin.y
+            ))
+        }
+
+        let fit = FrameRaster.aspectFitRect(for: image.extent.size)
+        let scale = fit.width / max(image.extent.width, 1)
+        image = image
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .transformed(by: CGAffineTransform(translationX: fit.origin.x, y: fit.origin.y))
+
+        guard let dst = dequeue() else { return nil }
+        // Clear to black first so letterbox bars are deterministic.
+        context.render(
+            CIImage(color: .black).cropped(to: canonicalExtent),
+            to: dst,
+            bounds: canonicalExtent,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
         )
+        context.render(
+            image.cropped(to: canonicalExtent),
+            to: dst,
+            bounds: canonicalExtent,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+        return dst
     }
 
-    // Slow path: convert to BGRA via Core Image.
-    let ci = CIImage(cvPixelBuffer: pixelBuffer)
-    let context = CIContext(options: [.cacheIntermediates: false])
-    var converted: CVPixelBuffer?
-    let attrs: [CFString: Any] = [
-        kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
-    ]
-    let createStatus = CVPixelBufferCreate(
-        kCFAllocatorDefault, width, height,
-        kCVPixelFormatType_32BGRA,
-        attrs as CFDictionary, &converted
-    )
-    guard createStatus == kCVReturnSuccess, let dst = converted else { return nil }
-    context.render(ci, to: dst)
-
-    CVPixelBufferLockBaseAddress(dst, .readOnly)
-    defer { CVPixelBufferUnlockBaseAddress(dst, .readOnly) }
-    guard let base = CVPixelBufferGetBaseAddress(dst) else { return nil }
-    let rowBytes = CVPixelBufferGetBytesPerRow(dst)
-    let data = Data(bytes: base, count: rowBytes * height)
-    return SimCamFrame(
-        width: width,
-        height: height,
-        bytesPerRow: rowBytes,
-        timestampSeconds: timestamp,
-        bgraData: data
-    )
+    private func dequeue() -> CVPixelBuffer? {
+        guard let pool else { return nil }
+        var pb: CVPixelBuffer?
+        let status = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pb)
+        return status == kCVReturnSuccess ? pb : nil
+    }
 }

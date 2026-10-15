@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 
 struct MainView: View {
     @Environment(ExtensionController.self) private var extensionController
-    @Environment(XPCClient.self) private var xpc
+    @Environment(CameraLink.self) private var link
     @Environment(SourceManager.self) private var sourceManager
 
     var body: some View {
@@ -94,11 +94,14 @@ struct MainView: View {
             }
 
             HStack {
-                Text("Frames pushed: \(sourceManager.framesPushed)")
+                Text(frameCounterText)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                if sourceManager.isSwitching {
+                    ProgressView().controlSize(.small)
+                }
                 Spacer()
-                if sourceManager.activeKind != .testPattern {
+                if sourceManager.activeKind != .testPattern || sourceManager.isSwitching {
                     Button("Stop") { sourceManager.stop() }
                         .controlSize(.small)
                 }
@@ -116,7 +119,7 @@ struct MainView: View {
     ) -> some View {
         let isActive = sourceManager.activeKind == kind
         return Button {
-            Task { try? await sourceManager.switchTo(kind) }
+            switchSource(kind)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: icon)
@@ -154,11 +157,9 @@ struct MainView: View {
             }
             Spacer()
             Button("Browse…") { pickVideoFile() }.controlSize(.small)
-            Button("Use") {
-                Task { try? await sourceManager.switchTo(.videoFile) }
-            }
+            Button("Use") { switchSource(.videoFile) }
             .controlSize(.small)
-            .disabled(sourceManager.selectedFileURL == nil)
+            .disabled(sourceManager.selectedFileURL == nil || sourceManager.isSwitching)
         }
     }
 
@@ -178,11 +179,9 @@ struct MainView: View {
             }
             Spacer()
             Button("Browse…") { pickImageFile() }.controlSize(.small)
-            Button("Use") {
-                Task { try? await sourceManager.switchTo(.image) }
-            }
+            Button("Use") { switchSource(.image) }
             .controlSize(.small)
-            .disabled(sourceManager.selectedImageURL == nil)
+            .disabled(sourceManager.selectedImageURL == nil || sourceManager.isSwitching)
         }
     }
 
@@ -199,11 +198,9 @@ struct MainView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
             }
-            Button("Generate") {
-                Task { try? await sourceManager.switchTo(.qrCode) }
-            }
+            Button("Generate") { switchSource(.qrCode) }
             .controlSize(.small)
-            .disabled(sourceManager.qrPayload.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(sourceManager.qrPayload.trimmingCharacters(in: .whitespaces).isEmpty || sourceManager.isSwitching)
         }
     }
 
@@ -220,8 +217,10 @@ struct MainView: View {
                 .controlSize(.small)
             }
             HStack(spacing: 16) {
-                diagnosticItem("XPC", state: xpcStateDescription, ok: xpcConnected)
                 diagnosticItem("Extension", state: extensionStatusLabel, ok: extensionController.state == .active)
+                diagnosticItem("Camera link", state: linkStateDescription, ok: link.isConnected)
+                diagnosticItem("Capture", state: captureDescription, ok: link.extensionStatus?.isStreamRunning == true)
+                diagnosticItem("Delivery", state: deliveryDescription, ok: link.framesRejected == 0)
             }
         }
         .padding(14)
@@ -242,7 +241,7 @@ struct MainView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Once active, the iOS Simulator sees 'SimulatorCamera Virtual'")
+            Text("Once active, the iOS Simulator sees '\(kSimCamDeviceName)'")
                 .font(.caption.bold())
             Text("AVCaptureDevice.default(for: .video) returns it. Existing camera code Just Works.")
                 .font(.caption)
@@ -290,21 +289,57 @@ struct MainView: View {
         }
     }
 
-    private var xpcConnected: Bool {
-        if case .connected = xpc.connectionState { return true }
-        return false
+    private var frameCounterText: String {
+        var parts = ["Frames pushed: \(sourceManager.framesPushed)"]
+        if link.framesDropped > 0 { parts.append("dropped: \(link.framesDropped)") }
+        if link.framesRejected > 0 { parts.append("rejected: \(link.framesRejected)") }
+        if let received = link.extensionStatus?.framesReceived, received > 0 {
+            parts.append("received by extension: \(received)")
+        }
+        return parts.joined(separator: " · ")
     }
 
-    private var xpcStateDescription: String {
-        switch xpc.connectionState {
+    private var deliveryDescription: String {
+        if link.framesRejected > 0 {
+            return "\(link.framesRejected) rejected — sink not open?"
+        }
+        if link.framesDropped > 0 {
+            return "\(link.framesDropped) dropped (extension busy)"
+        }
+        if let rejected = link.extensionStatus?.framesRejected, rejected > 0 {
+            return "extension rejected \(rejected)"
+        }
+        return "OK"
+    }
+
+    private var captureDescription: String {
+        guard let status = link.extensionStatus else { return "Unknown" }
+        if status.isStreamRunning {
+            return "\(status.connectedClientCount) client(s) capturing"
+        }
+        return "No app is capturing from the virtual camera"
+    }
+
+    private var linkStateDescription: String {
+        switch link.connectionState {
         case .disconnected: return "Disconnected"
-        case .connecting: return "Connecting…"
-        case .connected: return "Connected (pid \(xpc.lastPingPid))"
+        case .searching: return "Looking for the virtual camera…"
+        case .connected: return "Connected"
         case .failed(let m): return "Failed: \(m)"
         }
     }
 
     // MARK: - Actions
+
+    private func switchSource(_ kind: SimCamSourceKind) {
+        Task {
+            do {
+                try await sourceManager.switchTo(kind)
+            } catch {
+                // switchTo already surfaced the message via lastError; nothing to add.
+            }
+        }
+    }
 
     private func handleExtensionAction() {
         switch extensionController.state {
@@ -332,7 +367,8 @@ struct MainView: View {
     }
 
     private func runDiagnostics() {
-        xpc.connect()
-        xpc.ping()
+        extensionController.check()
+        link.connect()
+        link.refreshStatus()
     }
 }

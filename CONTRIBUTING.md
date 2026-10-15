@@ -7,7 +7,7 @@ Thanks for considering a contribution! SimulatorCamera is small and opinionated 
 1. **No private APIs.** Ever. Every symbol we import must be public and documented in Apple's SDK.
 2. **Zero SDK.** Consuming iOS apps must never need to import, link, or configure anything. If a change would require app-side code, it's the wrong change.
 3. **The extension is the product.** `SimulatorCameraExtension` must keep serving frames when the container app quits. Don't move state into the app that the extension needs.
-4. **XPC contract is a contract.** Changes to [`Shared/XPCContract.swift`](Shared/XPCContract.swift) affect the app, the extension, and `simcamctl` simultaneously — update all three and note it in the CHANGELOG.
+4. **The camera contract is a contract.** Changes to [`Shared/CameraContract.swift`](Shared/CameraContract.swift) (frame geometry, stream names, custom properties, status encoding) affect the app, the extension, and `simcamctl` simultaneously — update all three, keep `Tests/CameraContractTests.swift` green, and note it in the CHANGELOG.
 
 ## Dev setup
 

@@ -135,19 +135,22 @@ Open the SimulatorCamera Mac app:
 ln -s /Applications/SimulatorCamera.app/Contents/MacOS/simcamctl /usr/local/bin/simcamctl
 
 simcamctl ping
-# extension pid=12345 bundle=com.dautov.SimulatorCamera.Extension
+# extension reachable: "SimulatorCamera Virtual" source=test pattern streaming=yes
 
 simcamctl set-source --qr "https://example.com/auth?token=ABC123"
-# QR pushed (40 chars, 3686 KB)
+# QR pushed (40 chars)
 
 simcamctl set-source --image ./test-fixtures/receipt.png
 # image pushed: receipt.png (1280x720)
 
 simcamctl status
-# active source:    QR code
-# connected clients:1
-# last frame ts:    1714159823.412s
-# stream running:   yes
+# active source:     QR code
+# connected clients: 1
+# stream running:    yes
+# sink open:         no
+# last frame ts:     1714159823.412s
+# frames received:   3
+# frames rejected:   0
 ```
 
 Useful for:
@@ -175,7 +178,7 @@ We ship `patch-package`-compatible patches for known libraries:
 
 ```
 SimulatorCamera.app  (container)
-   ↓ XPC
+   ↓ CoreMediaIO sink stream (IOSurface frames) + custom properties
 .app/Contents/Library/SystemExtensions/
    SimulatorCameraExtension.systemextension
    ↓ CMIOExtensionStream.send

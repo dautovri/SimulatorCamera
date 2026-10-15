@@ -8,13 +8,14 @@
 //
 
 import CoreGraphics
+import CoreVideo
 import Foundation
 
 final class TestPatternSource: FrameSource, @unchecked Sendable {
     let kind: SimCamSourceKind = .testPattern
-    var onFrame: ((SimCamFrame) -> Void)?
+    var onFrame: ((CVPixelBuffer) -> Void)?
 
-    private let width = 1280, height = 720
+    private let width = kSimCamFrameWidth, height = kSimCamFrameHeight
     private var timer: DispatchSourceTimer?
     private var tick = 0
 
@@ -33,15 +34,13 @@ final class TestPatternSource: FrameSource, @unchecked Sendable {
     }
 
     private func emit() {
-        let rowBytes = width * 4
-        var data = Data(count: rowBytes * height)
+        guard let pb = FrameRaster.makePixelBuffer() else { return }
         let t = tick
         tick += 1
-        data.withUnsafeMutableBytes { raw in
-            guard let ctx = CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
-                                      bytesPerRow: rowBytes, space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-            else { return }
+        CVPixelBufferLockBaseAddress(pb, [])
+        if let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: width, height: height, bitsPerComponent: 8,
+                               bytesPerRow: CVPixelBufferGetBytesPerRow(pb), space: CGColorSpaceCreateDeviceRGB(),
+                               bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
             let bars: [(CGFloat, CGFloat, CGFloat)] = [(0.75, 0.75, 0.75), (0.75, 0.75, 0), (0, 0.75, 0.75), (0, 0.75, 0),
                                                         (0.75, 0, 0.75), (0.75, 0, 0), (0, 0, 0.75)]
             let w = CGFloat(width) / 7
@@ -52,7 +51,7 @@ final class TestPatternSource: FrameSource, @unchecked Sendable {
             ctx.setFillColor(red: 1, green: 1, blue: 1, alpha: 0.9)
             ctx.fill(CGRect(x: CGFloat((t * 8) % width), y: 0, width: 24, height: CGFloat(height)))
         }
-        onFrame?(SimCamFrame(width: width, height: height, bytesPerRow: rowBytes,
-                             timestampSeconds: Date().timeIntervalSince1970, bgraData: data))
+        CVPixelBufferUnlockBaseAddress(pb, [])
+        onFrame?(pb)
     }
 }

@@ -7,6 +7,9 @@
 //  Activate, the system prompts them to allow in System Settings, then
 //  the extension daemon starts and registers the virtual camera.
 //
+//  check() queries the installed state at launch so a relaunched app
+//  reports "Active" instead of "Not checked".
+//
 
 import Foundation
 import Observation
@@ -35,67 +38,61 @@ final class ExtensionController: NSObject {
 
     private let log = Logger(subsystem: "com.dautov.SimulatorCamera", category: "extension")
 
+    /// Requests currently in flight, keyed by identity, so we can tell a
+    /// properties query apart from an activation when results come back.
+    private var pendingKinds: [ObjectIdentifier: RequestKind] = [:]
+
+    private enum RequestKind {
+        case check, activate, deactivate
+    }
+
     override init() {
         super.init()
         // No automatic check on init. The UI calls .check() once it's on screen
         // so we don't fire OS requests during SwiftUI's @State materialization.
     }
 
+    /// Ask the OS whether the extension is already installed and enabled.
+    func check() {
+        guard state == .unknown || state == .inactive || state == .active else { return }
+        state = .checking
+        let request = OSSystemExtensionRequest.propertiesRequest(
+            forExtensionWithIdentifier: extensionBundleIdentifier,
+            queue: .main
+        )
+        submit(request, kind: .check)
+    }
+
     func activate() {
         state = .activating
-        // DIAGNOSTIC: dump what THIS process sees as Bundle.main + the extension
-        // bundle the framework should match. Write to /tmp file so we can read
-        // from terminal regardless of os_log filtering quirks.
-        let mainURL = Bundle.main.bundleURL
-        var diag = "=== Activation diagnostic ===\n"
-        diag += "Bundle.main: \(mainURL.path)\n"
-        let extDir = mainURL.appendingPathComponent("Contents/Library/SystemExtensions")
-        diag += "Looking in: \(extDir.path)\n"
-        diag += "Looking for identifier: \(extensionBundleIdentifier)\n"
-        let exts = (try? FileManager.default.contentsOfDirectory(at: extDir, includingPropertiesForKeys: nil)) ?? []
-        diag += "Extensions dir items: \(exts.count)\n"
-        for url in exts {
-            diag += "  - \(url.lastPathComponent)\n"
-            if let b = Bundle(url: url) {
-                diag += "    bundleId=\(b.bundleIdentifier ?? "<nil>")\n"
-                diag += "    isLoaded=\(b.isLoaded)\n"
-                diag += "    matches=\(b.bundleIdentifier == extensionBundleIdentifier)\n"
-            } else {
-                diag += "    Bundle(url:) returned nil!\n"
-            }
-        }
-        diag += "=== end diagnostic ===\n"
-        log.info("\(diag, privacy: .public)")
-        // App is sandboxed → can't write to /tmp. Use NSTemporaryDirectory()
-        // (per-container temp). Also dump to NSHomeDirectory()/Library/Logs/
-        // which sandboxed apps can write.
-        let containerTmp = NSTemporaryDirectory().appending("simcam-activate-diag.txt")
-        let logsDir = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Logs/SimulatorCamera")
-        try? FileManager.default.createDirectory(atPath: logsDir, withIntermediateDirectories: true)
-        let logFile = (logsDir as NSString).appendingPathComponent("activate-diag.txt")
-        try? diag.write(toFile: containerTmp, atomically: true, encoding: .utf8)
-        try? diag.write(toFile: logFile, atomically: true, encoding: .utf8)
-        lastMessage = "Diag at: \(containerTmp)\nAlso: \(logFile)"
-
+        lastMessage = "Requesting activation…"
         let request = OSSystemExtensionRequest.activationRequest(
             forExtensionWithIdentifier: extensionBundleIdentifier,
             queue: .main
         )
-        request.delegate = self
-        OSSystemExtensionManager.shared.submitRequest(request)
+        submit(request, kind: .activate)
         log.info("submitted activation request for \(extensionBundleIdentifier, privacy: .public)")
     }
 
     func deactivate() {
         state = .deactivating
-        lastMessage = "Requesting deactivation..."
+        lastMessage = "Requesting deactivation…"
         let request = OSSystemExtensionRequest.deactivationRequest(
             forExtensionWithIdentifier: extensionBundleIdentifier,
             queue: .main
         )
+        submit(request, kind: .deactivate)
+        log.info("submitted deactivation request")
+    }
+
+    private func submit(_ request: OSSystemExtensionRequest, kind: RequestKind) {
+        pendingKinds[ObjectIdentifier(request)] = kind
         request.delegate = self
         OSSystemExtensionManager.shared.submitRequest(request)
-        log.info("submitted deactivation request")
+    }
+
+    private func finish(_ request: OSSystemExtensionRequest) -> RequestKind? {
+        pendingKinds.removeValue(forKey: ObjectIdentifier(request))
     }
 }
 
@@ -115,7 +112,28 @@ extension ExtensionController: OSSystemExtensionRequestDelegate {
     nonisolated func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         Task { @MainActor in
             self.state = .awaitingApproval
-            self.lastMessage = "Open System Settings → Privacy & Security → click Allow for SimulatorCamera."
+            self.lastMessage = "Open System Settings → General → Login Items & Extensions → Camera Extensions and allow SimulatorCamera."
+        }
+    }
+
+    nonisolated func request(
+        _ request: OSSystemExtensionRequest,
+        foundProperties properties: [OSSystemExtensionProperties]
+    ) {
+        Task { @MainActor in
+            _ = self.finish(request)
+            if let enabled = properties.first(where: { $0.isEnabled && !$0.isAwaitingUserApproval }) {
+                self.state = .active
+                self.lastMessage = "Extension v\(enabled.bundleShortVersion) is active."
+            } else if properties.contains(where: { $0.isAwaitingUserApproval }) {
+                self.state = .awaitingApproval
+                self.lastMessage = "Extension installed but not yet allowed. Approve it in System Settings → General → Login Items & Extensions → Camera Extensions."
+            } else {
+                self.state = .inactive
+                self.lastMessage = properties.isEmpty
+                    ? "Extension not installed. Click Activate."
+                    : "Extension installed but disabled. Click Activate."
+            }
         }
     }
 
@@ -124,13 +142,19 @@ extension ExtensionController: OSSystemExtensionRequestDelegate {
         didFinishWithResult result: OSSystemExtensionRequest.Result
     ) {
         Task { @MainActor in
+            let kind = self.finish(request)
             switch result {
             case .completed:
-                self.state = .active
-                self.lastMessage = "Extension active. The virtual camera is now available in AVFoundation."
+                if kind == .deactivate {
+                    self.state = .inactive
+                    self.lastMessage = "Extension deactivated."
+                } else {
+                    self.state = .active
+                    self.lastMessage = "Extension active. The virtual camera is now available in AVFoundation."
+                }
             case .willCompleteAfterReboot:
                 self.state = .awaitingApproval
-                self.lastMessage = "Activation queued. Reboot to finalize."
+                self.lastMessage = "Request queued. Reboot to finalize."
             @unknown default:
                 self.state = .error("Unexpected activation result.")
             }
@@ -139,9 +163,17 @@ extension ExtensionController: OSSystemExtensionRequestDelegate {
 
     nonisolated func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         Task { @MainActor in
-            self.state = .error(error.localizedDescription)
-            self.lastMessage = "Activation failed: \(error.localizedDescription)"
-            self.log.error("activation failed: \(error.localizedDescription, privacy: .public)")
+            let kind = self.finish(request)
+            if kind == .check {
+                // Properties queries fail on unsupported OS builds; degrade to
+                // "inactive" so the Activate button still works.
+                self.state = .inactive
+                self.lastMessage = "Could not query extension state: \(error.localizedDescription)"
+            } else {
+                self.state = .error(error.localizedDescription)
+                self.lastMessage = "Request failed: \(error.localizedDescription)"
+            }
+            self.log.error("system extension request failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

@@ -3,9 +3,9 @@
 //  SimulatorCamera (container app)
 //
 //  SwiftUI entry point. Hosts ExtensionController (system extension state),
-//  XPCClient (connection to running extension), SourceManager (active
-//  frame source). Single window UI exposes the 5 sources matching SimCam
-//  feature parity: test pattern, Mac camera, video file, image, QR code.
+//  CameraLink (connection to the running extension's sink stream),
+//  SourceManager (active frame source). Single window UI exposes the 5
+//  sources: test pattern, Mac camera, video file, image, QR code.
 //
 
 import SwiftUI
@@ -13,24 +13,25 @@ import SwiftUI
 @main
 struct SimulatorCameraApp: App {
     @State private var extensionController = ExtensionController()
-    @State private var xpcClient = XPCClient()
+    @State private var cameraLink: CameraLink
     @State private var sourceManager: SourceManager
 
     init() {
-        let xpc = XPCClient()
-        _xpcClient = State(initialValue: xpc)
-        _sourceManager = State(initialValue: SourceManager(xpc: xpc))
+        let link = CameraLink()
+        _cameraLink = State(initialValue: link)
+        _sourceManager = State(initialValue: SourceManager(link: link))
     }
 
     var body: some Scene {
         WindowGroup("SimulatorCamera") {
             MainView()
                 .environment(extensionController)
-                .environment(xpcClient)
+                .environment(cameraLink)
                 .environment(sourceManager)
                 .frame(minWidth: 540, minHeight: 520)
-                .onAppear {
-                    xpcClient.connect()
+                .task {
+                    extensionController.check()
+                    cameraLink.connect()
                 }
         }
         .windowResizability(.contentSize)

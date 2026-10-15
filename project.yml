@@ -128,16 +128,33 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         SKIP_INSTALL: NO
 
+  # Logic tests for the wire contract shared by all three binaries. Compiles
+  # the Shared sources directly (no host app needed), so it runs unsigned on
+  # CI and on a machine where the extension was never activated.
+  SimulatorCameraTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.dautov.SimulatorCamera.Tests
+        CODE_SIGN_STYLE: Automatic
+
 schemes:
   SimulatorCamera:
     build:
       targets:
         SimulatorCamera: all
         SimulatorCameraExtension: all
+        SimulatorCameraTests: [test]
     run:
       config: Debug
     test:
       config: Debug
+      targets:
+        - SimulatorCameraTests
     profile:
       config: Release
     analyze:

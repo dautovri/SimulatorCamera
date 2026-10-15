@@ -14,22 +14,24 @@ There is **no iOS SDK and no Swift Package.** Your app links nothing.
 │                                                              │
 │   MainView / SourceManager      ← SwiftUI source picker      │
 │   ExtensionController           ← OSSystemExtensionRequest    │
-│   XPCClient ──────────────┐                                  │
-│   FrameSource impls:      │                                  │
-│     MacCameraSource       │                                  │
-│     VideoFileSource       │                                  │
-│     ImageSource           │                                  │
-│     QRSource              │                                  │
-└───────────────────────────┼──────────────────────────────────┘
-                            │ XPC  (Shared/XPCContract.swift)
-                            ▼
+│   CameraLink / CMIOSinkClient ─┐                              │
+│   FrameSource impls:           │                              │
+│     MacCameraSource            │                              │
+│     VideoFileSource            │                              │
+│     ImageSource                │                              │
+│     QRSource                   │                              │
+└────────────────────────────────┼─────────────────────────────┘
+          CoreMediaIO C API      │  (Shared/CameraContract.swift)
+          · sink stream queue    │  IOSurface-backed CMSampleBuffers
+          · custom properties    │  source kind + status
+                                 ▼
 ┌──────────────────────────────────────────────────────────────┐
 │  SimulatorCameraExtension.systemextension                    │
 │  (bundled at .app/Contents/Library/SystemExtensions/)        │
 │                                                              │
-│   XPCListener               ← receives frames + source cmds  │
 │   SimulatorCameraProvider   ← CMIOExtensionDeviceSource      │
-│                               CMIOExtensionStreamSource      │
+│     "SimulatorCamera.Video"       source stream → clients    │
+│     "SimulatorCamera.Video.Sink"  sink stream   ← app / CLI  │
 └───────────────────────────┬──────────────────────────────────┘
                             │ CMIOExtensionStream.send
                             ▼
@@ -43,8 +45,8 @@ There is **no iOS SDK and no Swift Package.** Your app links nothing.
               └───────────────────────────────┘
 ```
 
-`simcamctl` is a separate CLI target that speaks the same XPC contract
-(`simcamctl/SimCamCLIClient.swift`), so CI scripts and agents can drive
+`simcamctl` is a separate CLI target that speaks the same CoreMediaIO
+contract (`Shared/CMIOSinkClient.swift`), so CI scripts and agents can drive
 the source selection without the GUI.
 
 ## Process model
@@ -69,14 +71,30 @@ extensions are refused from arbitrary locations.
 
 ## Frame path
 
-1. A `FrameSource` produces a `CVPixelBuffer` (1280×720, 30 FPS).
-2. The container app sends it over XPC to the extension.
-3. `SimulatorCameraProvider` wraps it in a `CMSampleBuffer` and calls
-   `CMIOExtensionStream.send`.
+1. A `FrameSource` produces an IOSurface-backed `CVPixelBuffer`
+   (1280×720 BGRA, 30 FPS). `FrameNormalizer` letterboxes anything that
+   is not already that shape.
+2. `CameraLink` wraps it in a host-clock-stamped `CMSampleBuffer` and
+   enqueues it on the extension's **sink stream** through the CoreMediaIO
+   C API (`CMIOStreamCopyBufferQueue` + `CMSimpleQueueEnqueue`). The queue
+   is four deep; when it is full the frame is dropped, never buffered.
+3. `SimulatorCameraProvider` consumes the sink (`consumeSampleBuffer`),
+   validates the geometry, and re-sends the same IOSurface on the source
+   stream with `CMIOExtensionStream.send`. No pixel copy happens.
 4. CoreMediaIO delivers it to every host client — including the Simulator.
 
-Frames are currently copied across the XPC boundary. IOSurface-backed
-zero-copy is the v1.1 target (see the roadmap in the [README](../README.md#roadmap)).
+Control goes the same way, via two custom properties on the source stream:
+`srck` (settable, the active `SimCamSourceKind`) and `stat` (read-only
+status string). Apple's guidance for camera extensions is exactly this —
+custom properties for control, a sink stream for video — because the
+extension runs as the `_cmiodalassistants` role user and a private XPC
+service from the app cannot reach it.
+
+Fallbacks live in the extension so a misbehaving producer never stalls a
+capture session: with the test pattern selected the built-in stripe
+animation runs; with a producer selected but quiet, the last received frame
+is re-sent with fresh timestamps; with a producer selected that never
+delivered, the stripe pattern shows until it does.
 
 ## Why a system extension, not a TCP server + SDK?
 
