@@ -47,10 +47,16 @@ final class SourceManager {
     private var activeSource: FrameSource?
     private var switchGeneration = 0
     private let link: CameraLink
+    /// Frames for iOS Simulator apps (SimulatorInjection reads this file). The
+    /// Simulator cannot see CMIO cameras, so this is how they reach it.
+    private let frameStore = FrameStore()
+    private var testPattern: TestPatternSource?
     private let log = Logger(subsystem: "com.dautov.SimulatorCamera", category: "source-manager")
 
     init(link: CameraLink) {
         self.link = link
+        // Simulator apps get the test pattern as soon as the app is open.
+        Task { @MainActor [weak self] in try? await self?.switchTo(.testPattern) }
     }
 
     /// Switch to the given source kind. Throws on user-correctable issues
@@ -65,8 +71,16 @@ final class SourceManager {
         tearDownActiveSource()
         lastError = nil
 
-        // testPattern needs no container-side source.
+        // The extension draws its own test pattern for macOS apps; simulator
+        // apps get this container-side one through the frame file. No sink
+        // and no camera access needed.
         if kind == .testPattern {
+            let pattern = TestPatternSource()
+            let store = frameStore
+            pattern.onFrame = { frame in store.write(frame, sourceKind: UInt32(SimCamSourceKind.testPattern.rawValue)) }
+            try? await pattern.start()
+            guard switchGeneration == generation else { pattern.stop(); return }
+            testPattern = pattern
             declare(.testPattern)
             return
         }
@@ -75,7 +89,7 @@ final class SourceManager {
         let source: FrameSource
         switch kind {
         case .testPattern:
-            return
+            return // handled above
         case .macCamera:
             source = MacCameraSource()
         case .videoFile:
@@ -93,28 +107,26 @@ final class SourceManager {
         isSwitching = true
         defer { if switchGeneration == generation { isSwitching = false } }
 
-        // The sink needs camera access (TCC gates CMIO device streams).
-        guard await link.requestCameraAccessIfNeeded() else {
-            lastError = FrameSourceError.permissionDenied.localizedDescription
-            throw SwitchError.startFailed(lastError ?? "camera access denied")
+        // The extension's sink feeds macOS apps. It needs camera access (TCC
+        // gates CMIO device streams) and an approved extension. Simulator apps
+        // don't need either, so a missing sink is reported but not fatal.
+        var sinkOpen = false
+        if await link.requestCameraAccessIfNeeded() {
+            do { try link.openSink(); sinkOpen = true }
+            catch { lastError = "Extension not reachable (simulator apps still get frames): \(error.localizedDescription)" }
+        } else {
+            lastError = "Camera access denied: macOS apps won't see this source; simulator apps still do."
         }
 
-        // Open the sink before the producer starts so its first frames have
-        // somewhere to go. The extension keeps showing the test pattern
-        // until we declare the new kind below.
-        do {
-            try link.openSink()
-        } catch {
-            lastError = "Extension not reachable: \(error.localizedDescription)"
-            throw SwitchError.startFailed(lastError ?? error.localizedDescription)
-        }
-
-        // Frames go straight to the sink from the producer's thread; only
-        // the counter hops to the main actor, and only every few frames.
+        // Frames go straight to the sink and the frame file from the
+        // producer's thread; only the counter hops to the main actor.
         let link = self.link
+        let store = frameStore
+        let kindRaw = UInt32(kind.rawValue)
         var localCount = 0
         source.onFrame = { [weak self] frame in
-            link.pushFrame(frame)
+            store.write(frame, sourceKind: kindRaw)
+            if sinkOpen { link.pushFrame(frame) }
             localCount += 1
             if localCount % 10 == 0 {
                 let count = localCount
@@ -172,6 +184,8 @@ final class SourceManager {
     }
 
     private func tearDownActiveSource() {
+        testPattern?.stop()
+        testPattern = nil
         activeSource?.onFrame = nil
         activeSource?.stop()
         activeSource = nil

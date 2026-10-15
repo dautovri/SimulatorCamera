@@ -92,6 +92,29 @@ session.startRunning()
 // frames flow through your existing AVCaptureVideoDataOutput delegates
 ```
 
+## iOS Simulator apps (Xcode 26/27)
+
+The iOS Simulator's own capture stack has no path to Mac cameras: in iOS 26.5
+and iOS 27 simulators `AVCaptureDevice` lists nothing, not even the Mac's
+built-in camera. SimulatorCamera therefore ships a small library that you load
+into your app **in the Simulator only**. Your app still imports nothing.
+
+1. Run the SimulatorCamera Mac app and pick a source (or use
+   `simcamctl feed --qr "TEXT"` / `--image PATH` / `--pattern` / `--camera`).
+2. In Xcode: *Edit Scheme › Run › Arguments › Environment Variables*, add
+   `DYLD_INSERT_LIBRARIES` = `/Applications/SimulatorCamera.app/Contents/Resources/libSimCamInject.dylib`.
+   From the command line: `SIMCTL_CHILD_DYLD_INSERT_LIBRARIES=<that path> xcrun simctl launch booted <bundle id>`.
+3. Run on a Simulator. `AVCaptureDevice.default(for: .video)` returns
+   "SimulatorCamera"; frames reach `AVCaptureVideoDataOutput`,
+   `AVCaptureVideoPreviewLayer`, QR codes reach `AVCaptureMetadataOutput`, and
+   `AVCapturePhotoOutput` returns JPEGs. Without the Mac app running you see a
+   built-in test pattern.
+
+Frames travel through `/private/tmp/SimulatorCamera/frame.bin`
+(`SimulatorInjection/SCFrameStore.h`). Video frames are BGRA; apps that force a
+420 YpCbCr format get BGRA anyway. Not supported yet: barcode types other than
+QR, depth, multi-cam, movie file output.
+
 ## Picking a source
 
 Open the SimulatorCamera Mac app:
