@@ -32,6 +32,9 @@ func usage() -> Never {
       set-source --pattern         Use the built-in test pattern
       set-source --qr "PAYLOAD"    Generate + stream a QR code
       set-source --image PATH      Stream a static PNG/JPG file
+      feed --pattern|--qr TEXT|--image PATH|--camera [--seconds N]
+                                   Stream frames to iOS Simulator apps launched
+                                   with SimulatorInjection (no extension needed)
       help                         Show this help
 
     EXIT CODES:
@@ -52,6 +55,23 @@ func usage() -> Never {
 if args.count < 2 { usage() }
 
 let subcommand = args[1]
+
+if subcommand == "feed" {
+    guard args.count >= 3 else { usage() }
+    var seconds: Double?
+    if let i = args.firstIndex(of: "--seconds"), i + 1 < args.count { seconds = Double(args[i + 1]) }
+    let value = args.count >= 4 ? args[3] : ""
+    let source: FeedCommand.Source
+    switch args[2] {
+    case "--pattern": source = .pattern
+    case "--camera": source = .camera
+    case "--qr" where !value.isEmpty: source = .qr(value)
+    case "--image" where !value.isEmpty: source = .image(value)
+    default: usage()
+    }
+    FeedCommand().run(source, seconds: seconds)
+}
+
 let cli = SimCamCLIClient()
 
 switch subcommand {

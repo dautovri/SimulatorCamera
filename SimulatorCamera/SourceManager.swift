@@ -41,6 +41,9 @@ final class SourceManager {
 
     private var activeSource: FrameSource?
     private let xpc: XPCClient
+    /// Frames for iOS Simulator apps (SimulatorInjection reads this file). The
+    /// Simulator cannot see CMIO cameras, so this is how they reach it.
+    private let frameStore = FrameStore()
     private let log = Logger(subsystem: "com.dautov.SimulatorCamera", category: "source-manager")
 
     init(xpc: XPCClient) {
@@ -86,7 +89,10 @@ final class SourceManager {
 
         // Wire frame hook to XPC pump. Capture-queue thread is fine; XPCClient
         // serializes into NSXPCConnection internally.
+        let store = frameStore
+        let kindRaw = UInt32(kind.rawValue)
         source.onFrame = { [weak self] frame in
+            store.write(frame, sourceKind: kindRaw) // capture queue; FrameStore locks internally
             // Hop to main actor for state mutation only; the push itself is
             // fire-and-forget XPC.
             Task { @MainActor [weak self] in
