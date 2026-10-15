@@ -48,6 +48,8 @@ final class SourceManager {
 
     init(xpc: XPCClient) {
         self.xpc = xpc
+        // Simulator apps get the test pattern as soon as the app is open.
+        Task { @MainActor [weak self] in try? await self?.switchTo(.testPattern) }
     }
 
     /// Switch to the given source kind. Throws on user-correctable issues
@@ -65,14 +67,12 @@ final class SourceManager {
         xpc.setSource(kind)
         activeKind = kind
 
-        // testPattern needs no container-side source.
-        if kind == .testPattern { return }
-
         // Build the new source.
         let source: FrameSource
         switch kind {
         case .testPattern:
-            return
+            // The extension draws its own pattern; this one is for simulator apps.
+            source = TestPatternSource()
         case .macCamera:
             source = MacCameraSource()
         case .videoFile:
@@ -95,6 +95,7 @@ final class SourceManager {
             store.write(frame, sourceKind: kindRaw) // capture queue; FrameStore locks internally
             // Hop to main actor for state mutation only; the push itself is
             // fire-and-forget XPC.
+            if kind == .testPattern { return } // extension renders its own pattern
             Task { @MainActor [weak self] in
                 self?.xpc.pushFrame(frame)
                 self?.framesPushed += 1

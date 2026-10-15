@@ -11,6 +11,7 @@
 		0B0F268D9B7EE26F8904395C /* SourceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5009C01A5443FF9242C25F78 /* SourceManager.swift */; };
 		15791A539F2708C098E31D62 /* ImageSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA6DB0DCE94EADD660FAB81A /* ImageSource.swift */; };
 		179FDC3A8B0E644F699454C4 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79EB81F6F0FA26FC8C0D512B /* main.swift */; };
+		1DC705930BDB7DCA604A0DB9 /* TestPatternSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46D46520BA4BCC428A6C0794 /* TestPatternSource.swift */; };
 		386FA16D47CF0C291E857D00 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9C0BF6EA2153FF6E4FBC5A8 /* MainView.swift */; };
 		3A6201D7FAE7F6CA4EF65AF8 /* XPCContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = D03F7F4D79D34E4247B516F4 /* XPCContract.swift */; };
 		407FDEB20AF617B242C43F43 /* QRSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5543F1512AE6614C0DE4861D /* QRSource.swift */; };
@@ -64,6 +65,7 @@
 		197CD7BA6EB552D5C96D7431 /* VideoFileSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFileSource.swift; sourceTree = "<group>"; };
 		34DBFC0A082BB7CE216717D6 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		3D72AB264FCDBF6354E0DEFF /* XPCClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XPCClient.swift; sourceTree = "<group>"; };
+		46D46520BA4BCC428A6C0794 /* TestPatternSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestPatternSource.swift; sourceTree = "<group>"; };
 		4F36CFC13EBA8752E4B0A6C2 /* MacCameraSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacCameraSource.swift; sourceTree = "<group>"; };
 		5009C01A5443FF9242C25F78 /* SourceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceManager.swift; sourceTree = "<group>"; };
 		5543F1512AE6614C0DE4861D /* QRSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRSource.swift; sourceTree = "<group>"; };
@@ -142,6 +144,7 @@
 				F9C0BF6EA2153FF6E4FBC5A8 /* MainView.swift */,
 				5543F1512AE6614C0DE4861D /* QRSource.swift */,
 				5009C01A5443FF9242C25F78 /* SourceManager.swift */,
+				46D46520BA4BCC428A6C0794 /* TestPatternSource.swift */,
 				197CD7BA6EB552D5C96D7431 /* VideoFileSource.swift */,
 				3D72AB264FCDBF6354E0DEFF /* XPCClient.swift */,
 			);
@@ -285,6 +288,7 @@
 				386FA16D47CF0C291E857D00 /* MainView.swift in Sources */,
 				407FDEB20AF617B242C43F43 /* QRSource.swift in Sources */,
 				0B0F268D9B7EE26F8904395C /* SourceManager.swift in Sources */,
+				1DC705930BDB7DCA604A0DB9 /* TestPatternSource.swift in Sources */,
 				F6D3FCD3CDF09C4E6AB84FB0 /* VideoFileSource.swift in Sources */,
 				A17BFCC55A289A0EDBB17EFC /* XPCClient.swift in Sources */,
 				421EF26B04C7EAFAD829D128 /* XPCContract.swift in Sources */,
