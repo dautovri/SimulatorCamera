@@ -26,7 +26,7 @@ There is **no iOS SDK and no Swift Package.** Your app links nothing.
           · custom properties    │  source kind + status
                                  ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  SimulatorCameraExtension.systemextension                    │
+│  com.dautov.SimulatorCamera.Extension.systemextension        │
 │  (bundled at .app/Contents/Library/SystemExtensions/)        │
 │                                                              │
 │   SimulatorCameraProvider   ← CMIOExtensionDeviceSource      │
