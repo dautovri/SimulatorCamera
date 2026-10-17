@@ -26,8 +26,18 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var tick = 0
     private var session: AVCaptureSession?
     private var written = 0
+    private var parentWatch: DispatchSourceRead?
 
     func run(_ source: Source, seconds: Double?) -> Never {
+        if ProcessInfo.processInfo.environment["SIMCAM_STOP_ON_STDIN_EOF"] == "1" {
+            let watch = DispatchSource.makeReadSource(fileDescriptor: STDIN_FILENO, queue: .global())
+            watch.setEventHandler { [self] in
+                var byte: UInt8 = 0
+                if read(STDIN_FILENO, &byte, 1) == 0 { finish() }
+            }
+            parentWatch = watch
+            watch.resume()
+        }
         switch source {
         case .pattern: break
         case .qr(let text): still = render(qr: text)
@@ -66,12 +76,12 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         exit(3)
     }
 
-    private func write(_ pb: CVPixelBuffer) {
+    private func write(_ pb: CVPixelBuffer, sourceKind: UInt32 = 0) {
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
         store.write(width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb),
-                    bytesPerRow: CVPixelBufferGetBytesPerRow(pb), bgra: base, sourceKind: 0,
+                    bytesPerRow: CVPixelBufferGetBytesPerRow(pb), bgra: base, sourceKind: sourceKind,
                     time: Date().timeIntervalSince1970)
         written += 1
     }
@@ -159,7 +169,7 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) { write(pb) }
+        if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) { write(pb, sourceKind: UInt32(SimCamSourceKind.macCamera.rawValue)) }
     }
 }
 

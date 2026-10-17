@@ -7,6 +7,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+- Optional socket-owned host capture: running injected sessions acquire hardware
+  on demand and release it on stop or process exit. Supervised host feeds also
+  stop on stdin EOF when their controller exits.
+- Simulator injection supports `AVCaptureMovieFileOutput` recording to H.264/AAC
+  QuickTime files, including microphone audio through `AVAudioEngine`, recording
+  delegates/state, separate media connections, and rotation/mirroring transforms.
+- Isolated public-API recording probes decode finalized files and exercise repeat
+  takes, cancellation, teardown, permission denial, and missing samples. An optional
+  integration harness compiles our downstream app's original Media sources unchanged.
+
 ### Changed
 - **Frame transport rewritten on CoreMediaIO sink streams.** The v1.0.0 design
   pushed frames into the camera extension over a private `NSXPCListener`.
@@ -32,6 +43,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   start a CMIO stream from the sandbox).
 
 ### Fixed
+- Preview layers attached before capture inputs are configured no longer commit
+  the Simulator's native stub graph, which could cancel SwiftUI recording startup.
+- Releasing a preview's injected connection no longer enters native graph cleanup
+  for an uninitialized capture connection.
+- Webcam recording and preview share source-coordinate normalization: the upright
+  Mac image is the emulated camera's 90° portrait reference, preventing sideways
+  movies from normal iPhone portrait recording calls. `simcamctl feed --camera`
+  now supplies the camera source tag. Visual regressions check four rotations,
+  each mirrored/unmirrored, through preview and finalized movie pixels.
+- Injection initializer hooks preserve Objective-C init-family ownership. Sessions
+  own their outputs and keep the injected graph isolated through recording teardown.
 - **Test-pattern timer leak.** Each CMIO client that started streaming created
   a new timer without cancelling the previous one; orphaned timers kept emitting
   at full rate forever. Only the first client creates the timer now.
