@@ -216,10 +216,11 @@ public final class CMIOSinkClient: @unchecked Sendable {
         guard device != 0, sink != 0 else { throw CMIOSinkClientError.deviceNotFound }
 
         var queueRef: Unmanaged<CMSimpleQueue>?
-        // No "queue altered" callback: we size our own pacing by frame rate
-        // and use the queue count as backpressure instead.
+        // We pace by frame rate and use the queue count as backpressure, so the
+        // "queue altered" callback is a no-op. It must still be non-nil:
+        // with a nil proc CoreMediaIO returns noErr but no queue.
         let copyStatus = withUnsafeMutablePointer(to: &queueRef) { ptr in
-            CMIOStreamCopyBufferQueue(sink, nil, nil, ptr)
+            CMIOStreamCopyBufferQueue(sink, { _, _, _ in }, nil, ptr)
         }
         guard copyStatus == noErr, let queue = queueRef?.takeRetainedValue() else {
             throw CMIOSinkClientError.osStatus("CMIOStreamCopyBufferQueue", copyStatus)

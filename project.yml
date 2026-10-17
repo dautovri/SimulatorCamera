@@ -114,7 +114,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dautov.SimulatorCamera.Extension
-        PRODUCT_NAME: SimulatorCameraExtension
+        # sysextd requires the bundle file name to equal the bundle identifier
+        PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER)
         CODE_SIGN_ENTITLEMENTS: SimulatorCameraExtension/SimulatorCameraExtension.entitlements
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
