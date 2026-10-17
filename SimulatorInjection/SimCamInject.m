@@ -11,6 +11,7 @@
 //  AVCaptureDeviceInput, AVCaptureSession running state + notifications,
 //  AVCaptureVideoDataOutput (BGRA sample buffers), AVCaptureVideoPreviewLayer,
 //  AVCaptureMetadataOutput (QR codes), AVCapturePhotoOutput (JPEG/HEIF data).
+//  AVCaptureMovieFileOutput (H.264/AAC MOV, microphone via AVAudioEngine).
 //  Without the Mac app running, a built-in animated test pattern is shown.
 //
 //  Simulator only. Build: SimulatorInjection/build.sh
@@ -22,7 +23,12 @@
 #import <sys/mman.h>
 #import <fcntl.h>
 #import <stdatomic.h>
+#import <sys/socket.h>
+#import <sys/un.h>
+#import <errno.h>
 #import "SCFrameStore.h"
+#import "SCMovieRecorder.h"
+#import "SCVideoGeometry.h"
 
 #if !TARGET_OS_SIMULATOR
 #error "SimCamInject is for the iOS Simulator only"
@@ -147,10 +153,12 @@ static SCDevice *SCSharedDevice(void) {
     @public AVCaptureVideoOrientation _orientation;
     @public CGFloat _rotation;
     @public BOOL _mirrored;
+    @public AVMediaType _mediaType;
+    @public __weak AVCaptureOutput *_output;
 }
 - (NSArray *)inputPorts { return @[]; }
-- (AVMediaType)mediaType { return AVMediaTypeVideo; } // private, read by AVCaptureSession internals
-- (AVCaptureOutput *)output { return nil; }
+- (AVMediaType)mediaType { return _mediaType ?: AVMediaTypeVideo; } // read by AVCaptureSession internals
+- (AVCaptureOutput *)output { return _output; }
 - (AVCaptureVideoPreviewLayer *)videoPreviewLayer { return nil; }
 - (BOOL)isEnabled { return YES; }
 - (void)setEnabled:(BOOL)e {}
@@ -177,6 +185,16 @@ static SCDevice *SCSharedDevice(void) {
 @end
 
 static SCConnection *SCNewConnection(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // This fake never initializes AVCaptureConnection's native graph. Its
+        // dealloc assumes that graph exists and crashes when a preview releases
+        // its connection. NSObject still runs ARC ivar/weak/association cleanup.
+        SEL dealloc = sel_registerName("dealloc");
+        Method rootDealloc = class_getInstanceMethod([NSObject class], dealloc);
+        class_addMethod([SCConnection class], dealloc, method_getImplementation(rootDealloc),
+                        method_getTypeEncoding(rootDealloc));
+    });
     SCConnection *c = class_createInstance([SCConnection class], 0);
     c->_orientation = AVCaptureVideoOrientationPortrait;
     c->_rotation = 90;
@@ -230,6 +248,50 @@ static CVPixelBufferRef gStoreLatest; // newest complete frame from the Mac app,
 static double gStoreLatestAt;     // when gStoreLatest was read (seconds since 1970)
 static uint64_t gFrameCount;
 static dispatch_queue_t gFrameQueue;
+static int gBridgeSocket = -1; // A live socket is the host hardware lease; owned on gFrameQueue.
+
+static void SCResetStore(void) {
+    if (gStore) { munmap(gStore, SC_FRAME_FILE_SIZE); gStore = NULL; }
+    if (gLatest) { CVPixelBufferRelease(gLatest); gLatest = NULL; }
+    if (gStoreLatest) { CVPixelBufferRelease(gStoreLatest); gStoreLatest = NULL; }
+    gLastSeq = 0;
+    gStoreLatestAt = 0;
+}
+
+static void SCReleaseBridge(void) {
+    if (gBridgeSocket < 0) return;
+    // The next take gets a new frame-store inode. Drop mappings before releasing
+    // the host writer, rather than showing a stale frame from the previous take.
+    SCResetStore();
+    close(gBridgeSocket);
+    gBridgeSocket = -1;
+}
+
+static BOOL SCAcquireBridge(void) {
+    const char *path = getenv("SIMCAM_BRIDGE_SOCKET");
+    if (!path || !*path || gBridgeSocket >= 0) return YES;
+    struct sockaddr_un address = { .sun_family = AF_UNIX };
+    if (strlen(path) >= sizeof(address.sun_path)) return NO;
+    strlcpy(address.sun_path, path, sizeof(address.sun_path));
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return NO;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    int noSignal = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, sizeof(noSignal));
+    struct timeval timeout = { .tv_sec = 12 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    char ready = 0;
+    if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        send(fd, "CAPTURE\n", 8, 0) != 8 || recv(fd, &ready, 1, 0) != 1 || ready != 'R') {
+        close(fd);
+        SCLog(@"host camera bridge unavailable or failed to start");
+        return NO;
+    }
+    SCResetStore();
+    gBridgeSocket = fd;
+    return YES;
+}
 
 static void SCMapStore(void) {
     if (gStore) return;
@@ -259,7 +321,7 @@ static CVPixelBufferRef SCReadStoreOnce(void) {
     if (s1 & 1) return NULL;
     // Treat a writer that stopped more than 3 s ago as gone.
     if ([NSDate date].timeIntervalSince1970 - h->hostTime > 3 && h->hostTime > 1e9) return NULL;
-    uint32_t w = h->width, ht = h->height, bpr = h->bytesPerRow;
+    uint32_t w = h->width, ht = h->height, bpr = h->bytesPerRow, sourceKind = h->sourceKind;
     if (!w || !ht || w > SC_FRAME_MAX_WIDTH || ht > SC_FRAME_MAX_HEIGHT || bpr < w * 4 || (uint64_t)bpr * ht > SC_FRAME_MAX_BYTES) return NULL;
     if (s1 == gLastSeq && gStoreLatest && CVPixelBufferGetWidth(gStoreLatest) == w) return CVPixelBufferRetain(gStoreLatest);
     CVPixelBufferRef pb = SCNewBuffer(w, ht);
@@ -272,6 +334,7 @@ static CVPixelBufferRef SCReadStoreOnce(void) {
     CVPixelBufferUnlockBaseAddress(pb, 0);
     uint64_t s2 = atomic_load_explicit((_Atomic uint64_t *)&h->seq, memory_order_acquire);
     if (s1 != s2) { CVPixelBufferRelease(pb); return NULL; } // torn; keep previous
+    CVBufferSetAttachment(pb, SCFrameSourceKindKey, (__bridge CFNumberRef)@(sourceKind), kCVAttachmentMode_ShouldPropagate);
     gLastSeq = s1;
     return pb;
 }
@@ -323,19 +386,36 @@ static CVPixelBufferRef SCTestPattern(uint64_t n) {
 
 #pragma mark - Session registry
 
+static const void *kSCMovieKey = &kSCMovieKey;
+static void SCUpdateTimer(void);
+static void sc_stopRunning(AVCaptureSession *self, SEL cmd);
+@interface SCWeakSession : NSObject
+@property (nonatomic, weak) AVCaptureSession *session;
+@end
+@implementation SCWeakSession @end
+
 @interface SCSessionState : NSObject
-@property (nonatomic) BOOL usesFake;
+@property (nonatomic) BOOL usesFake; // Sticky: an injected session never resumes the native stub graph.
 @property (nonatomic) BOOL running;
 @property (nonatomic, strong) NSMutableArray *inputs;
-@property (nonatomic, strong) NSHashTable *outputs;   // weak
+@property (nonatomic, strong) NSHashTable *outputs;
 @end
 @implementation SCSessionState
-- (instancetype)init { if ((self = [super init])) { _inputs = [NSMutableArray array]; _outputs = [NSHashTable weakObjectsHashTable]; } return self; }
+- (instancetype)init { if ((self = [super init])) { _inputs = [NSMutableArray array]; _outputs = [NSHashTable hashTableWithOptions:NSPointerFunctionsStrongMemory]; } return self; }
+- (void)dealloc {
+    for (AVCaptureOutput *output in _outputs.allObjects) {
+        SCMovieRecorder *recorder = objc_getAssociatedObject(output, kSCMovieKey);
+        if (recorder) dispatch_async(gFrameQueue, ^{ [recorder stop]; });
+    }
+    dispatch_async(gFrameQueue, ^{ SCUpdateTimer(); });
+}
 @end
 
 static const void *kSCStateKey = &kSCStateKey;
 static const void *kSCSessionKey = &kSCSessionKey;        // output/layer -> session (weak box)
 static const void *kSCConnKey = &kSCConnKey;              // output/layer -> SCConnection
+static const void *kSCAudioConnKey = &kSCAudioConnKey;
+static const void *kSCPreviewSessionKey = &kSCPreviewSessionKey;
 static const void *kSCMetaTypesKey = &kSCMetaTypesKey;
 static const void *kSCRectKey = &kSCRectKey;
 static NSHashTable *gRunning;       // running fake sessions (weak)
@@ -350,9 +430,40 @@ static SCSessionState *SCState(AVCaptureSession *s) {
     return st;
 }
 
+static AVCaptureSession *SCSessionFor(id object) {
+    SCWeakSession *box = objc_getAssociatedObject(object, kSCSessionKey);
+    return box.session;
+}
+
+static NSArray *SCOutputs(AVCaptureSession *session) {
+    SCSessionState *state = SCState(session);
+    @synchronized (state) { return state.outputs.allObjects; }
+}
+
 static SCConnection *SCConnectionFor(id obj) {
     SCConnection *c = objc_getAssociatedObject(obj, kSCConnKey);
     if (!c) { c = SCNewConnection(); objc_setAssociatedObject(obj, kSCConnKey, c, OBJC_ASSOCIATION_RETAIN); }
+    return c;
+}
+
+static BOOL SCHasAudio(AVCaptureSession *session) {
+    for (AVCaptureInput *input in session.inputs)
+        if ([input isKindOfClass:AVCaptureDeviceInput.class] && [((AVCaptureDeviceInput *)input).device hasMediaType:AVMediaTypeAudio]) return YES;
+    return NO;
+}
+
+static BOOL SCHasVideo(AVCaptureSession *session) {
+    for (AVCaptureInput *input in SCState(session).inputs)
+        if ([input isKindOfClass:SCDeviceInput.class]) return YES;
+    return NO;
+}
+
+static SCConnection *SCAudioConnectionFor(AVCaptureOutput *output) {
+    SCConnection *c = objc_getAssociatedObject(output, kSCAudioConnKey);
+    if (!c) {
+        c = SCNewConnection(); c->_mediaType = AVMediaTypeAudio; c->_output = output;
+        objc_setAssociatedObject(output, kSCAudioConnKey, c, OBJC_ASSOCIATION_RETAIN);
+    }
     return c;
 }
 
@@ -395,9 +506,25 @@ static void SCDeliverMetadata(AVCaptureMetadataOutput *out, AVCaptureSession *se
 }
 
 static void SCTick(void) {
+    if (gBridgeSocket >= 0) {
+        char byte;
+        ssize_t count = recv(gBridgeSocket, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (count == 0 || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+            SCReleaseBridge();
+            [gLock lock]; NSArray *sessions = gRunning.allObjects; [gLock unlock];
+            NSError *error = [NSError errorWithDomain:AVFoundationErrorDomain code:AVErrorUnknown
+                userInfo:@{NSLocalizedDescriptionKey: @"The host camera bridge disconnected"}];
+            for (AVCaptureSession *session in sessions) {
+                sc_stopRunning(session, @selector(stopRunning));
+                [[NSNotificationCenter defaultCenter] postNotificationName:AVCaptureSessionRuntimeErrorNotification
+                    object:session userInfo:@{AVCaptureSessionErrorKey: error}];
+            }
+            return;
+        }
+    }
     gFrameCount++;
     CVPixelBufferRef pb = SCReadStore();
-    if (!pb) pb = SCTestPattern(gFrameCount);
+    if (!pb && !getenv("SIMCAM_BRIDGE_SOCKET")) pb = SCTestPattern(gFrameCount);
     if (!pb) return;
     if (gLatest) CVPixelBufferRelease(gLatest);
     gLatest = CVPixelBufferRetain(pb);
@@ -409,8 +536,14 @@ static void SCTick(void) {
     [gLock unlock];
 
     for (AVCaptureSession *s in sessions) {
-        for (AVCaptureOutput *out in SCState(s).outputs.allObjects) {
-            if ([out isKindOfClass:[AVCaptureVideoDataOutput class]]) {
+        for (AVCaptureOutput *out in SCOutputs(s)) {
+            if ([out isKindOfClass:[AVCaptureMovieFileOutput class]]) {
+#if SIMCAM_RECORDING_TESTS
+                if (getenv("SC_TEST_NO_VIDEO")) continue;
+#endif
+                SCMovieRecorder *recorder = objc_getAssociatedObject(out, kSCMovieKey);
+                [recorder appendVideo:pb time:pts];
+            } else if ([out isKindOfClass:[AVCaptureVideoDataOutput class]]) {
                 AVCaptureVideoDataOutput *vo = (AVCaptureVideoDataOutput *)out;
                 id<AVCaptureVideoDataOutputSampleBufferDelegate> d = vo.sampleBufferDelegate;
                 dispatch_queue_t q = vo.sampleBufferCallbackQueue;
@@ -428,29 +561,48 @@ static void SCTick(void) {
     if (layers.count && gFrameCount % 2 == 0) { // preview at 15 fps is plenty
         CIImage *ci = [CIImage imageWithCVPixelBuffer:pb];
         static CIContext *ctx; if (!ctx) ctx = [CIContext context];
-        CGImageRef img = [ctx createCGImage:ci fromRect:ci.extent];
+        NSMutableArray *frames = [NSMutableArray array];
+        CGFloat portraitRotation = SCFramePortraitRotation(pb);
+        CGSize size = CGSizeMake(CVPixelBufferGetWidth(pb), CVPixelBufferGetHeight(pb));
+        for (AVCaptureVideoPreviewLayer *layer in layers) {
+            CIImage *display = ci;
+            if (portraitRotation != 0) {
+                SCConnection *connection = SCConnectionFor(layer);
+                CGAffineTransform transform = SCVideoDisplayTransform(size, connection->_rotation, connection->_mirrored, portraitRotation);
+                CGRect bounds = CGRectApplyAffineTransform((CGRect){CGPointZero, size}, transform);
+                // Core Image uses bottom-left coordinates; the movie/display transform
+                // uses top-left coordinates. Convert both ends, not the rotation rule.
+                CGAffineTransform ciTransform = CGAffineTransformConcat(CGAffineTransformMake(1, 0, 0, -1, 0, size.height), transform);
+                ciTransform = CGAffineTransformConcat(ciTransform, CGAffineTransformMake(1, 0, 0, -1, 0, bounds.size.height));
+                display = [ci imageByApplyingTransform:ciTransform];
+            }
+            CGImageRef image = [ctx createCGImage:display fromRect:display.extent];
+            if (image) { [frames addObject:@[layer, (__bridge id)image]]; CGImageRelease(image); }
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             [CATransaction begin];
             [CATransaction setDisableActions:YES]; // no cross-fade between frames
-            for (AVCaptureVideoPreviewLayer *l in layers) {
+            for (NSArray *frame in frames) {
+                AVCaptureVideoPreviewLayer *l = frame[0];
                 AVCaptureSession *s = l.session;
                 if (!s || !SCState(s).running) continue;
                 NSString *g = l.videoGravity;
                 l.contentsGravity = [g isEqualToString:AVLayerVideoGravityResize] ? kCAGravityResize
                                   : [g isEqualToString:AVLayerVideoGravityResizeAspect] ? kCAGravityResizeAspect
                                   : kCAGravityResizeAspectFill;
-                l.contents = (__bridge id)img;
+                l.contents = frame[1];
             }
             [CATransaction commit];
-            CGImageRelease(img);
         });
     }
     CVPixelBufferRelease(pb);
 }
 
 static void SCUpdateTimer(void) {
+    // Sessions are controlled on caller queues; timer ownership stays on the frame queue.
+    dispatch_async(gFrameQueue, ^{
     [gLock lock];
-    BOOL any = gRunning.count > 0;
+    BOOL any = gRunning.allObjects.count > 0;
     [gLock unlock];
     if (any && !gTimer) {
         gTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, gFrameQueue);
@@ -461,6 +613,8 @@ static void SCUpdateTimer(void) {
         dispatch_source_cancel(gTimer);
         gTimer = nil;
     }
+    if (!any) SCReleaseBridge();
+    });
 }
 
 #pragma mark - AVCaptureDevice discovery
@@ -505,9 +659,12 @@ static SCDeviceInput *SCMakeInput(AVCaptureDevice *d) {
     in->_scDevice = (SCDevice *)d;
     return in;
 }
-static id sc_inputInit(id self, SEL _cmd, AVCaptureDevice *d, NSError **e) {
+// IMPs replacing init-family methods must preserve ARC's consumed-self/+1-return ABI.
+typedef id (*SCInputInitializer)(id __attribute__((ns_consumed)), SEL, AVCaptureDevice *, NSError **) __attribute__((ns_returns_retained));
+static id sc_inputInit(id __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureDevice *d, NSError **e) __attribute__((ns_returns_retained));
+static id sc_inputInit(id __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureDevice *d, NSError **e) {
     if ([d isKindOfClass:[SCDevice class]]) return SCMakeInput(d);
-    return ((id (*)(id, SEL, AVCaptureDevice *, NSError **))o_inputInit)(self, _cmd, d, e);
+    return ((SCInputInitializer)o_inputInit)(self, _cmd, d, e);
 }
 static id sc_inputFactory(id self, SEL _cmd, AVCaptureDevice *d, NSError **e) {
     if ([d isKindOfClass:[SCDevice class]]) return SCMakeInput(d);
@@ -516,27 +673,33 @@ static id sc_inputFactory(id self, SEL _cmd, AVCaptureDevice *d, NSError **e) {
 
 #pragma mark - AVCaptureSession
 
-static IMP o_canAddInput, o_addInput, o_removeInput, o_inputs, o_addOutput, o_removeOutput,
-           o_startRunning, o_stopRunning, o_isRunning, o_canAddOutput, o_addInputNoConn;
+static IMP o_canAddInput, o_addInput, o_removeInput, o_inputs, o_outputs, o_addOutput, o_removeOutput,
+            o_startRunning, o_stopRunning, o_isRunning, o_canAddOutput, o_addInputNoConn;
+static void sc_stopRunning(AVCaptureSession *self, SEL cmd);
 
 static BOOL sc_canAddInput(AVCaptureSession *self, SEL _cmd, AVCaptureInput *in) {
     if ([in isKindOfClass:[SCDeviceInput class]]) return YES;
+    if (SCState(self).usesFake && [in isKindOfClass:AVCaptureDeviceInput.class] && [((AVCaptureDeviceInput *)in).device hasMediaType:AVMediaTypeAudio]) return YES;
     return ((BOOL (*)(id, SEL, id))o_canAddInput)(self, _cmd, in);
 }
 static void sc_addInput(AVCaptureSession *self, SEL _cmd, AVCaptureInput *in) {
-    if ([in isKindOfClass:[SCDeviceInput class]]) {
-        SCSessionState *st = SCState(self);
+    SCSessionState *st = SCState(self);
+    BOOL fakeVideo = [in isKindOfClass:SCDeviceInput.class];
+    BOOL audio = [in isKindOfClass:AVCaptureDeviceInput.class] && [((AVCaptureDeviceInput *)in).device hasMediaType:AVMediaTypeAudio];
+    if (fakeVideo || (st.usesFake && audio)) {
         if (![st.inputs containsObject:in]) [st.inputs addObject:in];
-        st.usesFake = YES;
+        if (fakeVideo) st.usesFake = YES;
+        // Keep a real, permission-checked microphone input, but do not add it to
+        // the Simulator's stub graph: that graph emits spurious runtime failures.
         return;
     }
     ((void (*)(id, SEL, id))o_addInput)(self, _cmd, in);
 }
 static void sc_removeInput(AVCaptureSession *self, SEL _cmd, AVCaptureInput *in) {
-    if ([in isKindOfClass:[SCDeviceInput class]]) {
-        SCSessionState *st = SCState(self);
+    SCSessionState *st = SCState(self);
+    if ([st.inputs containsObject:in]) {
+        if (st.running) sc_stopRunning(self, @selector(stopRunning));
         [st.inputs removeObject:in];
-        st.usesFake = st.inputs.count > 0;
         return;
     }
     ((void (*)(id, SEL, id))o_removeInput)(self, _cmd, in);
@@ -551,21 +714,40 @@ static BOOL sc_canAddOutput(AVCaptureSession *self, SEL _cmd, AVCaptureOutput *o
     return ok || SCState(self).usesFake;
 }
 static void sc_addOutput(AVCaptureSession *self, SEL _cmd, AVCaptureOutput *o) {
-    [SCState(self).outputs addObject:o];
-    objc_setAssociatedObject(o, kSCSessionKey, self, OBJC_ASSOCIATION_ASSIGN);
+    SCSessionState *state = SCState(self);
+    @synchronized (state) { [state.outputs addObject:o]; }
+    SCWeakSession *box = [SCWeakSession new]; box.session = self;
+    objc_setAssociatedObject(o, kSCSessionKey, box, OBJC_ASSOCIATION_RETAIN);
+    if (state.usesFake) return;
     @try { ((void (*)(id, SEL, id))o_addOutput)(self, _cmd, o); }
     @catch (NSException *ex) { SCLog(@"addOutput fallback (%@)", ex.reason); }
 }
 static void sc_removeOutput(AVCaptureSession *self, SEL _cmd, AVCaptureOutput *o) {
-    [SCState(self).outputs removeObject:o];
-    @try { ((void (*)(id, SEL, id))o_removeOutput)(self, _cmd, o); } @catch (NSException *ex) {}
+    SCMovieRecorder *recorder = objc_getAssociatedObject(o, kSCMovieKey);
+    if (recorder) dispatch_async(gFrameQueue, ^{ [recorder stop]; });
+    SCSessionState *state = SCState(self);
+    @synchronized (state) { [state.outputs removeObject:o]; }
+    if (!state.usesFake) { @try { ((void (*)(id, SEL, id))o_removeOutput)(self, _cmd, o); } @catch (NSException *ex) {} }
+    objc_setAssociatedObject(o, kSCSessionKey, nil, OBJC_ASSOCIATION_RETAIN);
+}
+static NSArray *sc_outputs(AVCaptureSession *self, SEL cmd) {
+    if (SCState(self).usesFake) return SCOutputs(self);
+    return ((id (*)(id, SEL))o_outputs)(self, cmd);
 }
 static void sc_startRunning(AVCaptureSession *self, SEL _cmd) {
     SCSessionState *st = SCState(self);
     if (!st.usesFake) { ((void (*)(id, SEL))o_startRunning)(self, _cmd); return; }
+    if (!SCHasVideo(self)) return;
     if (st.running) return;
-    st.running = YES;
-    [gLock lock]; [gRunning addObject:self]; [gLock unlock];
+    __block BOOL ready = NO;
+    dispatch_sync(gFrameQueue, ^{
+        ready = SCAcquireBridge();
+        if (ready) {
+            st.running = YES;
+            [gLock lock]; [gRunning addObject:self]; [gLock unlock];
+        }
+    });
+    if (!ready) return;
     SCUpdateTimer();
     SCLog(@"session running with the injected camera");
     [[NSNotificationCenter defaultCenter] postNotificationName:AVCaptureSessionDidStartRunningNotification object:self];
@@ -574,21 +756,27 @@ static void sc_stopRunning(AVCaptureSession *self, SEL _cmd) {
     SCSessionState *st = SCState(self);
     if (!st.usesFake) { ((void (*)(id, SEL))o_stopRunning)(self, _cmd); return; }
     if (!st.running) return;
+    for (AVCaptureOutput *output in SCOutputs(self)) {
+        SCMovieRecorder *recorder = objc_getAssociatedObject(output, kSCMovieKey);
+        if (recorder) dispatch_async(gFrameQueue, ^{ [recorder stop]; });
+    }
     st.running = NO;
     [gLock lock]; [gRunning removeObject:self]; [gLock unlock];
     SCUpdateTimer();
     [[NSNotificationCenter defaultCenter] postNotificationName:AVCaptureSessionDidStopRunningNotification object:self];
 }
 static IMP o_beginConfig, o_commitConfig;
-// A session on the injected camera has no real graph to configure; the stock
-// commit walks output connections and would hit the fake ones.
+// Never commit an injected graph into the native simulator stub. Even an empty
+// native commit emits runtime errors that would interrupt a valid emulated take.
+// If begin preceded the fake input, its native transaction stays quarantined
+// until session destruction. usesFake stays set even after removing the camera.
 static void sc_beginConfig(AVCaptureSession *self, SEL _cmd) {
-    SCSessionState *st = objc_getAssociatedObject(self, kSCStateKey);
+    SCSessionState *st = SCState(self);
     if (st.usesFake) return;
     ((void (*)(id, SEL))o_beginConfig)(self, _cmd);
 }
 static void sc_commitConfig(AVCaptureSession *self, SEL _cmd) {
-    SCSessionState *st = objc_getAssociatedObject(self, kSCStateKey);
+    SCSessionState *st = SCState(self);
     if (st.usesFake) return;
     ((void (*)(id, SEL))o_commitConfig)(self, _cmd);
 }
@@ -601,20 +789,32 @@ static BOOL sc_isRunning(AVCaptureSession *self, SEL _cmd) {
 #pragma mark - Outputs and preview layer
 
 static IMP o_connectionWithMediaType, o_connections, o_setMetaTypes, o_metaTypes, o_availableMetaTypes,
-           o_layerConnection, o_layerSetSession, o_layerInitSession, o_layerInitNoConn, o_transformMeta,
+           o_layerConnection, o_layerSession, o_layerSetSession, o_layerInitSession, o_layerInitNoConn, o_transformMeta,
            o_capturePhoto, o_setRectOfInterest, o_rectOfInterest;
 
 static BOOL SCOutputIsFake(id out) {
-    AVCaptureSession *s = objc_getAssociatedObject(out, kSCSessionKey);
+    AVCaptureSession *s = SCSessionFor(out);
     SCSessionState *st = s ? objc_getAssociatedObject(s, kSCStateKey) : nil;
     return st.usesFake;
 }
 static AVCaptureConnection *sc_connectionWithMediaType(AVCaptureOutput *self, SEL _cmd, AVMediaType t) {
-    if (SCOutputIsFake(self)) return SCConnectionFor(self);
+    if (SCOutputIsFake(self)) {
+        if ([t isEqualToString:AVMediaTypeVideo]) {
+            if (!SCHasVideo(SCSessionFor(self))) return nil;
+            SCConnection *c = SCConnectionFor(self); c->_output = self; return c;
+        }
+        if ([t isEqualToString:AVMediaTypeAudio] && [self isKindOfClass:AVCaptureMovieFileOutput.class] && SCHasAudio(SCSessionFor(self))) return SCAudioConnectionFor(self);
+        return nil;
+    }
     return ((id (*)(id, SEL, id))o_connectionWithMediaType)(self, _cmd, t);
 }
 static NSArray *sc_connections(AVCaptureOutput *self, SEL _cmd) {
-    if (SCOutputIsFake(self)) return @[SCConnectionFor(self)];
+    if (SCOutputIsFake(self)) {
+        AVCaptureConnection *video = sc_connectionWithMediaType(self, @selector(connectionWithMediaType:), AVMediaTypeVideo);
+        AVCaptureConnection *audio = sc_connectionWithMediaType(self, @selector(connectionWithMediaType:), AVMediaTypeAudio);
+        if (!video) return audio ? @[audio] : @[];
+        return audio ? @[video, audio] : @[video];
+    }
     return ((id (*)(id, SEL))o_connections)(self, _cmd);
 }
 static void sc_setMetaTypes(AVCaptureMetadataOutput *self, SEL _cmd, NSArray *types) {
@@ -646,20 +846,41 @@ static void SCTrackLayer(AVCaptureVideoPreviewLayer *l) {
 static AVCaptureConnection *sc_layerConnection(AVCaptureVideoPreviewLayer *self, SEL _cmd) {
     AVCaptureSession *s = self.session;
     SCSessionState *st = s ? objc_getAssociatedObject(s, kSCStateKey) : nil;
-    if (st.usesFake) return SCConnectionFor(self);
+    if (st.usesFake || objc_getAssociatedObject(self, kSCPreviewSessionKey)) return SCConnectionFor(self);
     return ((id (*)(id, SEL))o_layerConnection)(self, _cmd);
 }
+static AVCaptureSession *sc_layerSession(AVCaptureVideoPreviewLayer *self, SEL _cmd) {
+    AVCaptureSession *session = objc_getAssociatedObject(self, kSCPreviewSessionKey);
+    return session ?: ((id (*)(id, SEL))o_layerSession)(self, _cmd);
+}
 static void sc_layerSetSession(AVCaptureVideoPreviewLayer *self, SEL _cmd, AVCaptureSession *s) {
+    // SwiftUI installs its preview while capture authorization is still pending.
+    // Attaching an empty session through the native setter commits the Simulator
+    // stub graph and emits a runtime error before the fake camera is configured.
+    // Keep the preview's normal strong session ownership without that native graph.
+    if (s && (SCState(s).usesFake || s.inputs.count == 0)) {
+        objc_setAssociatedObject(self, kSCPreviewSessionKey, s, OBJC_ASSOCIATION_RETAIN);
+        SCTrackLayer(self);
+        return;
+    }
+    if (objc_getAssociatedObject(self, kSCPreviewSessionKey)) {
+        objc_setAssociatedObject(self, kSCPreviewSessionKey, nil, OBJC_ASSOCIATION_RETAIN);
+        self.contents = nil;
+        if (!s) return;
+    }
     ((void (*)(id, SEL, id))o_layerSetSession)(self, _cmd, s);
     SCTrackLayer(self);
 }
-static id sc_layerInitSession(AVCaptureVideoPreviewLayer *self, SEL _cmd, AVCaptureSession *s) {
-    id r = ((id (*)(id, SEL, id))o_layerInitSession)(self, _cmd, s);
+typedef id (*SCLayerInitializer)(id __attribute__((ns_consumed)), SEL, id) __attribute__((ns_returns_retained));
+static id sc_layerInitSession(AVCaptureVideoPreviewLayer * __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureSession *s) __attribute__((ns_returns_retained));
+static id sc_layerInitSession(AVCaptureVideoPreviewLayer * __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureSession *s) {
+    id r = ((SCLayerInitializer)o_layerInitSession)(self, _cmd, s);
     if (r) SCTrackLayer(r);
     return r;
 }
-static id sc_layerInitNoConn(AVCaptureVideoPreviewLayer *self, SEL _cmd, AVCaptureSession *s) {
-    id r = ((id (*)(id, SEL, id))o_layerInitNoConn)(self, _cmd, s);
+static id sc_layerInitNoConn(AVCaptureVideoPreviewLayer * __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureSession *s) __attribute__((ns_returns_retained));
+static id sc_layerInitNoConn(AVCaptureVideoPreviewLayer * __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureSession *s) {
+    id r = ((SCLayerInitializer)o_layerInitNoConn)(self, _cmd, s);
     if (r) SCTrackLayer(r);
     return r;
 }
@@ -702,6 +923,34 @@ static void sc_capturePhoto(AVCapturePhotoOutput *self, SEL _cmd, AVCapturePhoto
 
 #pragma mark - Install
 
+static IMP o_movieStart, o_movieStop, o_movieRecording;
+static void sc_movieStart(AVCaptureMovieFileOutput *self, SEL cmd, NSURL *url, id<AVCaptureFileOutputRecordingDelegate> delegate) {
+    if (!SCOutputIsFake(self)) { ((void (*)(id, SEL, id, id))o_movieStart)(self, cmd, url, delegate); return; }
+    AVCaptureSession *session = SCSessionFor(self);
+    BOOL running = SCState(session).running;
+    BOOL audio = SCHasAudio(session);
+    SCConnection *connection = SCConnectionFor(self);
+    CGFloat rotation = connection->_rotation; BOOL mirrored = connection->_mirrored;
+    NSArray *connections = self.connections;
+    dispatch_async(gFrameQueue, ^{
+        SCMovieRecorder *previous = objc_getAssociatedObject(self, kSCMovieKey);
+        if (previous && !previous.finished) return; // Native API requires stop/finish before another start.
+        SCMovieRecorder *recorder = [[SCMovieRecorder alloc] initWithOutput:self URL:url delegate:delegate connections:connections audio:audio rotation:rotation mirrored:mirrored queue:gFrameQueue];
+        objc_setAssociatedObject(self, kSCMovieKey, recorder, OBJC_ASSOCIATION_RETAIN);
+        [recorder start];
+        if (!running) [recorder stop];
+    });
+}
+static void sc_movieStop(AVCaptureMovieFileOutput *self, SEL cmd) {
+    if (!SCOutputIsFake(self) && !objc_getAssociatedObject(self, kSCMovieKey)) { ((void (*)(id, SEL))o_movieStop)(self, cmd); return; }
+    dispatch_async(gFrameQueue, ^{ [objc_getAssociatedObject(self, kSCMovieKey) stop]; });
+}
+static BOOL sc_movieRecording(AVCaptureMovieFileOutput *self, SEL cmd) {
+    SCMovieRecorder *recorder = objc_getAssociatedObject(self, kSCMovieKey);
+    if (SCOutputIsFake(self) || recorder) return recorder.isRecording;
+    return ((BOOL (*)(id, SEL))o_movieRecording)(self, cmd);
+}
+
 __attribute__((constructor)) static void SCInstall(void) {
     if (getenv("SIMCAM_DISABLE")) return;
     gLock = [NSLock new];
@@ -727,6 +976,7 @@ __attribute__((constructor)) static void SCInstall(void) {
     SCSwizzleInstance(S, @selector(addInput:), (IMP)sc_addInput, &o_addInput);
     SCSwizzleInstance(S, @selector(removeInput:), (IMP)sc_removeInput, &o_removeInput);
     SCSwizzleInstance(S, @selector(inputs), (IMP)sc_inputs, &o_inputs);
+    SCSwizzleInstance(S, @selector(outputs), (IMP)sc_outputs, &o_outputs);
     SCSwizzleInstance(S, @selector(canAddOutput:), (IMP)sc_canAddOutput, &o_canAddOutput);
     SCSwizzleInstance(S, @selector(addOutput:), (IMP)sc_addOutput, &o_addOutput);
     SCSwizzleInstance(S, @selector(removeOutput:), (IMP)sc_removeOutput, &o_removeOutput);
@@ -746,8 +996,13 @@ __attribute__((constructor)) static void SCInstall(void) {
     SCSwizzleInstance(M, @selector(setRectOfInterest:), (IMP)sc_setRectOfInterest, &o_setRectOfInterest);
     SCSwizzleInstance(M, @selector(rectOfInterest), (IMP)sc_rectOfInterest, &o_rectOfInterest);
     SCSwizzleInstance([AVCapturePhotoOutput class], @selector(capturePhotoWithSettings:delegate:), (IMP)sc_capturePhoto, &o_capturePhoto);
+    Class F = [AVCaptureMovieFileOutput class];
+    SCSwizzleInstance(F, @selector(startRecordingToOutputFileURL:recordingDelegate:), (IMP)sc_movieStart, &o_movieStart);
+    SCSwizzleInstance(F, @selector(stopRecording), (IMP)sc_movieStop, &o_movieStop);
+    SCSwizzleInstance(F, @selector(isRecording), (IMP)sc_movieRecording, &o_movieRecording);
 
     Class L = [AVCaptureVideoPreviewLayer class];
+    SCSwizzleInstance(L, @selector(session), (IMP)sc_layerSession, &o_layerSession);
     SCSwizzleInstance(L, @selector(connection), (IMP)sc_layerConnection, &o_layerConnection);
     SCSwizzleInstance(L, @selector(setSession:), (IMP)sc_layerSetSession, &o_layerSetSession);
     SCSwizzleInstance(L, @selector(initWithSession:), (IMP)sc_layerInitSession, &o_layerInitSession);
