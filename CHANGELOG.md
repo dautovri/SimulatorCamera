@@ -16,7 +16,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   delegates/state, separate media connections, and rotation/mirroring transforms.
 - Isolated public-API recording probes decode finalized files and exercise repeat
   takes, cancellation, teardown, permission denial, and missing samples. An optional
-  integration harness compiles Small Hello's original Media sources unchanged.
+  integration harness compiles our downstream app's original Media sources unchanged.
 
 ### Changed
 - **Frame transport rewritten on CoreMediaIO sink streams.** The v1.0.0 design

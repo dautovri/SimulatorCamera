@@ -4,7 +4,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 DEVICE="${1:?usage: run-native-driver-probe.sh DEDICATED_SIMULATOR_UDID MEDIA_SOURCE_PATH [fixture|live]}"
-SOURCE="${2:?provide original Small Hello Media source path}"
+SOURCE="${2:?provide original downstream app Media source path}"
 MODE="${3:-fixture}"
 bash SimulatorInjection/Tests/build-native-driver-probe.sh "$SOURCE"
 xcrun simctl install "$DEVICE" build/NativeDriverProbe.app

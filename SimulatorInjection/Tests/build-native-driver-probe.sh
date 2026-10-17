@@ -2,7 +2,7 @@
 set -euo pipefail
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-SOURCE="${1:?usage: build-native-driver-probe.sh /path/to/small-hello/app/Sources/Media}"
+SOURCE="${1:?usage: build-native-driver-probe.sh /path/to/downstream-app/app/Sources/Media}"
 OUT="$ROOT/build/NativeDriverProbe.app"
 mkdir -p "$OUT" "$ROOT/build/evidence"
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"

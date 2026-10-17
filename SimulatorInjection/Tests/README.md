@@ -52,7 +52,7 @@ After the public suite has built its tools:
 
 ```sh
 bash SimulatorInjection/Tests/run-native-driver-probe.sh "$DEVICE" \
-  /path/to/small-hello/app/Sources/Media fixture
+  /path/to/downstream-app/app/Sources/Media fixture
 ```
 
 This compiles the actual caller's Media sources in place, read-only, with Swift 6
@@ -73,7 +73,7 @@ process. It does not change global audio defaults or install a driver:
 
 ```sh
 bash SimulatorInjection/Tests/run-native-driver-probe.sh "$DEVICE" \
-  /path/to/small-hello/app/Sources/Media live
+  /path/to/downstream-app/app/Sources/Media live
 ```
 
 This machine-specific mode requires those two existing devices and already

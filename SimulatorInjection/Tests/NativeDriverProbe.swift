@@ -18,7 +18,7 @@ final class NativeDriverProbe: UIResponder, UIApplicationDelegate {
         label.frame = CGRect(x: 24, y: 70, width: 340, height: 90)
         label.textColor = .white
         label.numberOfLines = 0
-        label.text = "Native Small Hello driver\nPreparing recording"
+        label.text = "Native downstream app driver\nPreparing recording"
         view.view.addSubview(label)
         let preview = AVCaptureVideoPreviewLayer()
         preview.frame = CGRect(x: 20, y: 180, width: 350, height: 450)
@@ -61,7 +61,7 @@ final class NativeDriverProbe: UIResponder, UIApplicationDelegate {
                 for take in 1...2 {
                     let url = documents.appendingPathComponent("native-\(take).mov")
                     try? FileManager.default.removeItem(at: url)
-                    label.text = "Native Small Hello driver\nRecording take \(take)"
+                    label.text = "Native downstream app driver\nRecording take \(take)"
                     print("NATIVE requesting take \(take)")
                     let completion = try await driver.beginRecording(to: url)
                     print("NATIVE started take \(take)")
@@ -80,7 +80,7 @@ final class NativeDriverProbe: UIResponder, UIApplicationDelegate {
                     }
                     print("NATIVE finalized \(url.path)")
                 }
-                label.text = "Native Small Hello driver\nReplaying finalized video + audio"
+                label.text = "Native downstream app driver\nReplaying finalized video + audio"
                 preview.removeFromSuperlayer()
                 let playbackAudio = AudioSessionLease()
                 try playbackAudio.activateForPlayback()
