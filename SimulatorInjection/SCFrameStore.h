@@ -25,7 +25,7 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t bytesPerRow;
-    uint32_t sourceKind;      /* SimCamSourceKind raw value, informational */
+    uint32_t sourceKind;      /* SimCamSourceKind; 1 = upright Mac webcam image */
     uint64_t seq;             /* odd = write in progress */
     double   hostTime;        /* seconds, writer's clock, for staleness checks */
     uint8_t  reserved[24];

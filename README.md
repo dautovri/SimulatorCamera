@@ -113,7 +113,67 @@ into your app **in the Simulator only**. Your app still imports nothing.
 Frames travel through `/private/tmp/SimulatorCamera/frame.bin`
 (`SimulatorInjection/SCFrameStore.h`). Video frames are BGRA; apps that force a
 420 YpCbCr format get BGRA anyway. Not supported yet: barcode types other than
-QR, depth, multi-cam, movie file output.
+QR, depth, multi-cam.
+
+### Movie recording with sound
+
+The injection library supports `AVCaptureMovieFileOutput` start/stop recording,
+`isRecording`, recording delegates, and separate video/audio connections. It
+writes finalized H.264 + mono AAC QuickTime movies from injected video frames
+and the Simulator's microphone route. Apps keep using AVFoundation; there is no
+app-side writer or library import. Video connection rotation and mirroring are
+written into the movie's display transform.
+
+Mac webcam images are already upright, unlike an iPhone's sensor-coordinate
+buffers. Camera-tagged frames therefore use a **90° portrait reference**: a
+portrait connection requesting 90° displays the host image upright, while 0°,
+180° and 270° still rotate relative to that reference. Mirroring is applied in
+display coordinates. Webcam preview and movies use the same mapping, preserving
+the source aspect ratio and actual frame dimensions without cropping/resampling
+the recorded pixels. Other source types use the existing zero-offset sensor
+coordinate convention. Rebuild `simcamctl` as well as the injection library:
+`feed --camera` now writes the camera source tag needed for normalization.
+
+Add a native microphone `AVCaptureDeviceInput`, obtain microphone permission,
+and activate a recording-capable `AVAudioSession`. The library preserves the
+caller's audio-session settings. Audio comes from an internal `AVAudioEngine`,
+because the injected capture session does not run a native capture graph.
+Adding `AVCaptureAudioDataOutput` to that session does **not** deliver audio.
+Audio from a selected *video file source* is not forwarded.
+
+The Simulator's host input must carry sound. A silent virtual/loopback input
+produces a genuinely silent recording; this library does not substitute a tone
+or pretend microphone permissions were granted. No system extension is needed
+for the built-in moving test pattern plus microphone recording.
+
+Wait for `didFinishRecording` before reading the completed file or starting the
+next take. Startup cancellation and missing samples fail with an error;
+stopping a session or removing its output finalizes an already-started take.
+The supported subset uses new local `.mov` destinations and fixed frame
+dimensions. Custom codec/output settings, recording limits, pause/resume, and
+full device-quality timing/latency guarantees are outside this implementation.
+An injected session remains injected after input removal; use a new session to
+return to native capture. This avoids committing fake configuration into the
+Simulator's stub graph, which otherwise emits spurious runtime errors.
+
+See [recording verification](SimulatorInjection/Tests/README.md) for isolated
+public-API probes, decoded audio/video checks, and an unchanged-caller harness.
+
+### On-demand host capture
+
+An optional host controller can provide a Unix socket via `SIMCAM_BRIDGE_SOCKET`
+in the injected app's environment. On the first injected session's `startRunning`,
+the library connects and sends `CAPTURE\n`. The controller starts its hardware
+feeds and replies with one byte, `R`, only when live frames/audio are ready.
+The connection remains open until the last session stops or is released; process
+exit also closes it automatically. The controller must stop its feeds when the
+last client disconnects. Failed startup leaves the session stopped. Controller
+loss interrupts capture; managed capture never substitutes a test pattern.
+
+`simcamctl feed` and `Tests/HostAudioFeed` accept `SIMCAM_STOP_ON_STDIN_EOF=1`
+for supervised use: keep their stdin pipes open while owned, and close them to
+stop. This also releases hardware when a controller crashes. A zero duration
+keeps `HostAudioFeed` running until its owner stops it.
 
 ## Picking a source
 
