@@ -65,7 +65,14 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO # the bundling script reads SimulatorInjection/
     postBuildScripts:
       - name: Bundle SimulatorInjection
-        basedOnDependencyAnalysis: false
+        # Declared inputs/outputs make Xcode re-sign the app after the dylib
+        # changes; running unconditionally left a stale seal on incremental builds.
+        inputFiles:
+          - $(SRCROOT)/SimulatorInjection/SimCamInject.m
+          - $(SRCROOT)/SimulatorInjection/SCFrameStore.h
+          - $(SRCROOT)/SimulatorInjection/build.sh
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/libSimCamInject.dylib
         script: |
           # The library simulator apps load to see SimulatorCamera (see SimulatorInjection/).
           "$SRCROOT/SimulatorInjection/build.sh" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
@@ -107,7 +114,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dautov.SimulatorCamera.Extension
-        PRODUCT_NAME: SimulatorCameraExtension
+        # sysextd requires the bundle file name to equal the bundle identifier
+        PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER)
         CODE_SIGN_ENTITLEMENTS: SimulatorCameraExtension/SimulatorCameraExtension.entitlements
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES

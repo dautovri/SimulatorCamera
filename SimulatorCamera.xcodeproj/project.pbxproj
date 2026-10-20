@@ -307,18 +307,21 @@
 /* Begin PBXShellScriptBuildPhase section */
 		98537C620109260D815B0C49 /* Bundle SimulatorInjection */ = {
 			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(SRCROOT)/SimulatorInjection/SimCamInject.m",
+				"$(SRCROOT)/SimulatorInjection/SCFrameStore.h",
+				"$(SRCROOT)/SimulatorInjection/build.sh",
 			);
 			name = "Bundle SimulatorInjection";
 			outputFileListPaths = (
 			);
 			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/libSimCamInject.dylib",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -641,7 +644,7 @@
 					"@executable_path/../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.dautov.SimulatorCamera.Extension;
-				PRODUCT_NAME = SimulatorCameraExtension;
+				PRODUCT_NAME = "$(PRODUCT_BUNDLE_IDENTIFIER)";
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
 			};
@@ -682,7 +685,7 @@
 					"@executable_path/../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.dautov.SimulatorCamera.Extension;
-				PRODUCT_NAME = SimulatorCameraExtension;
+				PRODUCT_NAME = "$(PRODUCT_BUNDLE_IDENTIFIER)";
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
 			};
