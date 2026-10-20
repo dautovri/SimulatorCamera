@@ -80,6 +80,29 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Extension state is queried at launch (`propertiesRequest`) so a relaunched
   app shows "Active" instead of "Not checked". Leftover activation diagnostics
   that wrote files into `~/Library/Logs` are gone.
+- **Injected camera no longer crashes apps.** The `-init` swizzles use
+  init-family ownership (callers of `-[AVCaptureDeviceInput
+  initWithDevice:error:]` over-released the fake input), the fake objects skip
+  AVFoundation's `-dealloc` (it crashed on their never-initialised state), and
+  adding a second output to a fake session no longer crashes in
+  `-canAddOutput:`. Found with CommunityToolkit.Maui.Camera.
+- **Injected photos have a camera's shape.** `capturePhoto` returns a centre
+  4:3 crop of the frame, portrait when the app captures in portrait, instead
+  of the raw landscape frame.
+- **Incremental builds keep a valid signature.** The dylib bundling phase
+  declares its inputs and output, so Xcode re-signs the app after the dylib
+  changes.
+- **Extension activates.** Its bundle is named after its bundle identifier
+  (`com.dautov.SimulatorCamera.Extension.systemextension`), as sysextd
+  requires.
+- **Sink stream opens.** `CMIOStreamCopyBufferQueue` gets a no-op queue-altered
+  callback; with nil it returned `noErr` but no queue.
+- **Camera link attaches reliably.** The app requests camera access before
+  attaching (without it the CMIO device list is empty) and re-resolves device
+  and stream IDs on every attach (stale IDs failed with `'!str'`).
+- **Sink producers are recognised** when CoreMediaIO reports their signing ID
+  as nil or "unknown": the extension reads it from the kernel for that pid and
+  accepts only a valid, non-ad-hoc signature from its own team.
 
 ### Added
 - `SimulatorCameraTests`: 20 logic tests for the contract, status encoding,

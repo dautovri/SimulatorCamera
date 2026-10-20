@@ -20,6 +20,7 @@
 #import <CoreImage/CoreImage.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <sys/mman.h>
 #import <fcntl.h>
 #import <stdatomic.h>
@@ -44,6 +45,14 @@ static void SCLog(NSString *fmt, ...) {
 }
 
 #pragma mark - Swizzling helpers
+
+// -init replacements are plain C functions, so ARC would treat them as +0
+// returns with an unowned self. Declare init-family ownership explicitly:
+// self is consumed and the result is +1, matching what callers of -init expect.
+#define SC_INIT_RESULT __attribute__((ns_returns_retained)) id
+#define SC_INIT_SELF __attribute__((ns_consumed)) id
+typedef SC_INIT_RESULT (*SCInitIMP1)(SC_INIT_SELF, SEL, id);
+typedef SC_INIT_RESULT (*SCInitIMP2)(SC_INIT_SELF, SEL, id, NSError **);
 
 static void SCSwizzleInstance(Class cls, SEL sel, IMP newImp, IMP *orig) {
     Method m = class_getInstanceMethod(cls, sel);
@@ -157,8 +166,9 @@ static SCDevice *SCSharedDevice(void) {
     @public __weak AVCaptureOutput *_output;
 }
 - (NSArray *)inputPorts { return @[]; }
-- (AVMediaType)mediaType { return _mediaType ?: AVMediaTypeVideo; } // read by AVCaptureSession internals
-- (AVCaptureOutput *)output { return _output; }
+- (AVMediaType)mediaType { return AVMediaTypeVideo; } // private, read by AVCaptureSession internals
+- (AVCaptureDevice *)sourceDevice { return SCSharedDevice(); } // private, read by -canAddOutput:/-addOutput:
+- (AVCaptureOutput *)output { return nil; }
 - (AVCaptureVideoPreviewLayer *)videoPreviewLayer { return nil; }
 - (BOOL)isEnabled { return YES; }
 - (void)setEnabled:(BOOL)e {}
@@ -222,7 +232,6 @@ static SCConnection *SCNewConnection(void) {
     @public NSData *_data;
     @public CMTime _time;
 }
-- (void)dealloc { if (_pixels) CVPixelBufferRelease(_pixels); }
 - (CMTime)timestamp { return _time; }
 - (BOOL)isRawPhoto { return NO; }
 - (CVPixelBufferRef)pixelBuffer { return _pixels; }
@@ -238,6 +247,26 @@ static SCConnection *SCNewConnection(void) {
 - (NSInteger)photoCount { return 1; }
 - (AVCaptureResolvedPhotoSettings *)resolvedSettings { return nil; }
 @end
+
+// The fakes never ran their AVFoundation -init, so the AVFoundation -dealloc
+// would tear down internals that were never set up (it crashes in
+// -[AVCaptureConnection dealloc]). Go straight to NSObject's -dealloc, which
+// still releases our ivars (.cxx_destruct) and associated objects.
+static void SCFakeDealloc(__unsafe_unretained id self, SEL _cmd) {
+    if ([self isKindOfClass:[SCPhoto class]]) {
+        __unsafe_unretained SCPhoto *p = self;
+        if (p->_pixels) CVPixelBufferRelease(p->_pixels);
+        p->_pixels = NULL;
+    }
+    struct objc_super sup = { self, [NSObject class] };
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, _cmd);
+}
+
+static void SCInstallFakeDealloc(void) {
+    SEL dealloc = sel_registerName("dealloc"); // ARC disallows @selector(dealloc)
+    for (Class c in @[[SCDevice class], [SCDeviceInput class], [SCConnection class], [SCQRObject class], [SCPhoto class]])
+        class_replaceMethod(c, dealloc, (IMP)SCFakeDealloc, "v@:");
+}
 
 #pragma mark - Frame source (Mac app frame file, or built-in test pattern)
 
@@ -659,12 +688,14 @@ static SCDeviceInput *SCMakeInput(AVCaptureDevice *d) {
     in->_scDevice = (SCDevice *)d;
     return in;
 }
-// IMPs replacing init-family methods must preserve ARC's consumed-self/+1-return ABI.
-typedef id (*SCInputInitializer)(id __attribute__((ns_consumed)), SEL, AVCaptureDevice *, NSError **) __attribute__((ns_returns_retained));
-static id sc_inputInit(id __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureDevice *d, NSError **e) __attribute__((ns_returns_retained));
-static id sc_inputInit(id __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureDevice *d, NSError **e) {
-    if ([d isKindOfClass:[SCDevice class]]) return SCMakeInput(d);
-    return ((SCInputInitializer)o_inputInit)(self, _cmd, d, e);
+static SC_INIT_RESULT sc_inputInit(SC_INIT_SELF self, SEL _cmd, AVCaptureDevice *d, NSError **e) {
+    if ([d isKindOfClass:[SCDevice class]]) {
+        // Keep the alloc'd-but-uninitialised receiver alive rather than
+        // running AVCaptureDeviceInput's -dealloc on it.
+        (void)CFBridgingRetain(self);
+        return SCMakeInput(d);
+    }
+    return ((SCInitIMP2)o_inputInit)(self, _cmd, d, e);
 }
 static id sc_inputFactory(id self, SEL _cmd, AVCaptureDevice *d, NSError **e) {
     if ([d isKindOfClass:[SCDevice class]]) return SCMakeInput(d);
@@ -710,8 +741,9 @@ static NSArray *sc_inputs(AVCaptureSession *self, SEL _cmd) {
     return st.inputs.count ? [st.inputs arrayByAddingObjectsFromArray:r] : r;
 }
 static BOOL sc_canAddOutput(AVCaptureSession *self, SEL _cmd, AVCaptureOutput *o) {
-    BOOL ok = ((BOOL (*)(id, SEL, id))o_canAddOutput)(self, _cmd, o);
-    return ok || SCState(self).usesFake;
+    // The stock check walks existing outputs' (fake) connections; skip it.
+    if (SCState(self).usesFake) return ![SCState(self).outputs containsObject:o];
+    return ((BOOL (*)(id, SEL, id))o_canAddOutput)(self, _cmd, o);
 }
 static void sc_addOutput(AVCaptureSession *self, SEL _cmd, AVCaptureOutput *o) {
     SCSessionState *state = SCState(self);
@@ -871,16 +903,13 @@ static void sc_layerSetSession(AVCaptureVideoPreviewLayer *self, SEL _cmd, AVCap
     ((void (*)(id, SEL, id))o_layerSetSession)(self, _cmd, s);
     SCTrackLayer(self);
 }
-typedef id (*SCLayerInitializer)(id __attribute__((ns_consumed)), SEL, id) __attribute__((ns_returns_retained));
-static id sc_layerInitSession(AVCaptureVideoPreviewLayer * __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureSession *s) __attribute__((ns_returns_retained));
-static id sc_layerInitSession(AVCaptureVideoPreviewLayer * __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureSession *s) {
-    id r = ((SCLayerInitializer)o_layerInitSession)(self, _cmd, s);
+static SC_INIT_RESULT sc_layerInitSession(SC_INIT_SELF self, SEL _cmd, AVCaptureSession *s) {
+    id r = ((SCInitIMP1)o_layerInitSession)(self, _cmd, s);
     if (r) SCTrackLayer(r);
     return r;
 }
-static id sc_layerInitNoConn(AVCaptureVideoPreviewLayer * __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureSession *s) __attribute__((ns_returns_retained));
-static id sc_layerInitNoConn(AVCaptureVideoPreviewLayer * __attribute__((ns_consumed)) self, SEL _cmd, AVCaptureSession *s) {
-    id r = ((SCLayerInitializer)o_layerInitNoConn)(self, _cmd, s);
+static SC_INIT_RESULT sc_layerInitNoConn(SC_INIT_SELF self, SEL _cmd, AVCaptureSession *s) {
+    id r = ((SCInitIMP1)o_layerInitNoConn)(self, _cmd, s);
     if (r) SCTrackLayer(r);
     return r;
 }
@@ -902,11 +931,44 @@ static AVMetadataObject *sc_transformMeta(AVCaptureVideoPreviewLayer *self, SEL 
     return t;
 }
 
+/// Whether the app is capturing in portrait: its preview layer is taller than
+/// wide, or (no layer) the connection rotates by 90/270 degrees.
+static BOOL SCIsPortraitCapture(AVCaptureOutput *out) {
+    AVCaptureSession *s = objc_getAssociatedObject(out, kSCSessionKey);
+    [gLock lock]; NSArray *layers = gLayers.allObjects; [gLock unlock];
+    for (AVCaptureVideoPreviewLayer *l in layers) {
+        CGSize b = l.bounds.size;
+        if (l.session == s && b.width > 0 && b.height > 0) return b.height > b.width;
+    }
+    return fmod(SCConnectionFor(out)->_rotation, 180) != 0;
+}
+
+/// Centre crop to a width/height ratio. Frames are upright as the preview shows
+/// them, so this is the photo a real camera takes around the previewed area.
+static CVPixelBufferRef SCCropToAspect(CVPixelBufferRef pb, CGFloat aspect) {
+    size_t W = CVPixelBufferGetWidth(pb), H = CVPixelBufferGetHeight(pb);
+    size_t w = W, h = H;
+    if ((CGFloat)W / H > aspect) w = (size_t)llround(H * aspect); else h = (size_t)llround(W / aspect);
+    if (w == W && h == H) return CVPixelBufferRetain(pb);
+    CVPixelBufferRef out = SCNewBuffer(w, h);
+    if (!out) return CVPixelBufferRetain(pb);
+    CGFloat x = (W - w) / 2.0, y = (H - h) / 2.0;
+    CIImage *ci = [[[CIImage imageWithCVPixelBuffer:pb] imageByCroppingToRect:CGRectMake(x, y, w, h)]
+                   imageByApplyingTransform:CGAffineTransformMakeTranslation(-x, -y)];
+    static CIContext *ctx; if (!ctx) ctx = [CIContext context];
+    [ctx render:ci toCVPixelBuffer:out];
+    return out;
+}
+
 static void sc_capturePhoto(AVCapturePhotoOutput *self, SEL _cmd, AVCapturePhotoSettings *settings, id<AVCapturePhotoCaptureDelegate> d) {
     if (!SCOutputIsFake(self)) { ((void (*)(id, SEL, id, id))o_capturePhoto)(self, _cmd, settings, d); return; }
+    // iPhone photos are 4:3, portrait when the app captures in portrait.
+    CGFloat aspect = SCIsPortraitCapture(self) ? 3.0 / 4.0 : 4.0 / 3.0;
     dispatch_async(gFrameQueue, ^{
-        CVPixelBufferRef pb = gLatest ? CVPixelBufferRetain(gLatest) : SCTestPattern(gFrameCount);
-        if (!pb) return;
+        CVPixelBufferRef frame = gLatest ? CVPixelBufferRetain(gLatest) : SCTestPattern(gFrameCount);
+        if (!frame) return;
+        CVPixelBufferRef pb = SCCropToAspect(frame, aspect);
+        CVPixelBufferRelease(frame);
         SCPhoto *p = class_createInstance([SCPhoto class], 0);
         p->_pixels = pb; // owned
         p->_time = CMClockGetTime(CMClockGetHostTimeClock());
@@ -958,6 +1020,7 @@ __attribute__((constructor)) static void SCInstall(void) {
     gLayers = [NSHashTable weakObjectsHashTable];
     gFrameQueue = dispatch_queue_create("com.dautov.SimulatorCamera.frames", DISPATCH_QUEUE_SERIAL);
     gQR = [CIDetector detectorOfType:CIDetectorTypeQRCode context:nil options:@{ CIDetectorAccuracy: CIDetectorAccuracyHigh }];
+    SCInstallFakeDealloc();
 
     Class D = [AVCaptureDevice class];
     SCSwizzleClass(D, @selector(defaultDeviceWithMediaType:), (IMP)sc_defaultDevice, &o_defaultDevice);

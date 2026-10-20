@@ -63,7 +63,12 @@ final class CameraLink {
                 Task { @MainActor [weak self] in self?.attachNow() }
             }
         }
-        attachNow()
+        // A sandboxed app without camera (TCC) access gets an empty CMIO
+        // device list, so the virtual camera looks "not registered".
+        Task { @MainActor [weak self] in
+            _ = await self?.requestCameraAccessIfNeeded()
+            self?.attachNow()
+        }
     }
 
     func disconnect() {
@@ -144,7 +149,9 @@ final class CameraLink {
     /// frames pushed while the extension still shows the test pattern are
     /// consumed and ignored, so there is no harm in opening early.
     func openSink() throws {
-        if !client.isAttached { try client.attach() }
+        // Always re-resolve: device and stream IDs change whenever the
+        // extension restarts or is replaced, and stale IDs fail with '!str'.
+        try client.attach()
         try client.openSink()
         framesRejected = 0
     }
@@ -152,7 +159,7 @@ final class CameraLink {
     /// Declare the active source to the extension. Selecting the test
     /// pattern also closes the sink.
     func setSource(_ kind: SimCamSourceKind) throws {
-        if !client.isAttached { try client.attach() }
+        try client.attach()
         if kind == .testPattern {
             client.closeSink()
         } else {

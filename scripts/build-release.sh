@@ -102,7 +102,7 @@ fi
 
 echo "▶︎ Verifying signature chain"
 
-EXTENSION_BUNDLE="$APP_BUNDLE/Contents/Library/SystemExtensions/SimulatorCameraExtension.systemextension"
+EXTENSION_BUNDLE="$APP_BUNDLE/Contents/Library/SystemExtensions/com.dautov.SimulatorCamera.Extension.systemextension"
 if [[ ! -d "$EXTENSION_BUNDLE" ]]; then
     echo "ERROR: bundled extension not found at $EXTENSION_BUNDLE" >&2
     exit 1

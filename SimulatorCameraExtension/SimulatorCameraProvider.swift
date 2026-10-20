@@ -614,12 +614,48 @@ final class SimulatorCameraSinkStream: NSObject, CMIOExtensionStreamSource {
     /// so forks that keep the naming pattern need no changes.
     func authorizedToStartStream(for client: CMIOExtensionClient) -> Bool {
         let allowed = Self.allowedProducerSigningIDs()
-        guard let signingID = client.signingID, allowed.contains(signingID) else {
-            log.error("refusing sink producer pid \(client.pid) signingID=\(client.signingID ?? "nil", privacy: .public)")
+        // CoreMediaIO cannot always resolve the client process and then
+        // reports its signing ID as nil or "unknown". Ask the code signing
+        // machinery about the pid directly in that case.
+        var signingID = client.signingID
+        if signingID == nil || signingID == "unknown" {
+            signingID = Self.sameTeamSigningID(ofPID: client.pid)
+        }
+        guard let signingID, allowed.contains(signingID) else {
+            log.error("refusing sink producer pid \(client.pid) signingID=\(client.signingID ?? "nil", privacy: .public) resolved=\(signingID ?? "nil", privacy: .public)")
             return false
         }
         _client = client
         return true
+    }
+
+    /// Signing identifier of the process `pid`, or nil unless the kernel
+    /// reports a valid, certificate-backed (not ad-hoc) signature from the
+    /// same team as this extension. The team check matters: anyone can
+    /// ad-hoc sign a binary with our identifier.
+    ///
+    /// This asks the kernel (csops) rather than Security.framework because
+    /// SecCodeCheckValidity re-reads the client's executable from disk,
+    /// which the extension sandbox denies, and a file-read exception
+    /// entitlement makes the extension crash at sandbox init.
+    static func sameTeamSigningID(ofPID pid: pid_t) -> String? {
+        guard let team = CodeSigning.teamID(of: getpid()) else {
+            log.error("signing check: could not read own team ID")
+            return nil
+        }
+        guard let flags = CodeSigning.status(of: pid) else {
+            log.error("signing check: no code signing status for pid \(pid) (errno \(errno))")
+            return nil
+        }
+        guard flags & CodeSigning.valid != 0, flags & CodeSigning.adhoc == 0 else {
+            log.error("signing check: pid \(pid) signature not valid or ad-hoc (flags 0x\(String(flags, radix: 16), privacy: .public))")
+            return nil
+        }
+        guard CodeSigning.teamID(of: pid) == team else {
+            log.error("signing check: pid \(pid) team \(CodeSigning.teamID(of: pid) ?? "nil", privacy: .public) != \(team, privacy: .public)")
+            return nil
+        }
+        return CodeSigning.identity(of: pid)
     }
 
     static func allowedProducerSigningIDs(extensionBundleID: String? = Bundle.main.bundleIdentifier) -> Set<String> {
@@ -702,3 +738,38 @@ final class SimulatorCameraProviderSource: NSObject, CMIOExtensionProviderSource
         // No settable properties.
     }
 }
+
+/// Minimal wrapper over the kernel's code signing queries. `csops` is not in
+/// the public headers but is exported by libsystem_kernel and is what
+/// Security.framework itself uses for dynamic (running process) checks.
+private enum CodeSigning {
+    static let valid: UInt32 = 0x1      // CS_VALID
+    static let adhoc: UInt32 = 0x2      // CS_ADHOC
+
+    private static let opsStatus: UInt32 = 0     // CS_OPS_STATUS
+    private static let opsIdentity: UInt32 = 11  // CS_OPS_IDENTITY
+    private static let opsTeamID: UInt32 = 14    // CS_OPS_TEAMID
+
+    static func status(of pid: pid_t) -> UInt32? {
+        var flags: UInt32 = 0
+        return csops(pid, opsStatus, &flags, MemoryLayout<UInt32>.size) == 0 ? flags : nil
+    }
+
+    static func identity(of pid: pid_t) -> String? { blobString(pid, opsIdentity) }
+    static func teamID(of pid: pid_t) -> String? { blobString(pid, opsTeamID) }
+
+    /// Identity and team ID come back as a blob: 4-byte magic, 4-byte
+    /// big-endian total length, then a NUL-terminated string.
+    private static func blobString(_ pid: pid_t, _ op: UInt32) -> String? {
+        var buffer = [UInt8](repeating: 0, count: 512)
+        let result = buffer.withUnsafeMutableBytes { csops(pid, op, $0.baseAddress, $0.count) }
+        guard result == 0 else { return nil }
+        let length = Int(buffer[4]) << 24 | Int(buffer[5]) << 16 | Int(buffer[6]) << 8 | Int(buffer[7])
+        guard length > 8 else { return nil }
+        let bytes = buffer[8..<min(length, buffer.count)].prefix { $0 != 0 }
+        return bytes.isEmpty ? nil : String(decoding: bytes, as: UTF8.self)
+    }
+}
+
+@_silgen_name("csops")
+private func csops(_ pid: pid_t, _ ops: UInt32, _ useraddr: UnsafeMutableRawPointer?, _ usersize: Int) -> Int32

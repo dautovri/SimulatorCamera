@@ -240,7 +240,7 @@ We ship `patch-package`-compatible patches for known libraries:
 SimulatorCamera.app  (container)
    ↓ CoreMediaIO sink stream (IOSurface frames) + custom properties
 .app/Contents/Library/SystemExtensions/
-   SimulatorCameraExtension.systemextension
+   com.dautov.SimulatorCamera.Extension.systemextension
    ↓ CMIOExtensionStream.send
 macOS CoreMediaIO subsystem
    ↓ host AVFoundation
