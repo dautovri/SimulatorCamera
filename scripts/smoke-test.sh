@@ -40,7 +40,7 @@ xcodebuild -project SimulatorCamera.xcodeproj \
 ok "Container app + extension build."
 
 say "systemextensionsctl list"
-if systemextensionsctl list | grep -q "com.dautov.SimulatorCamera.Extension"; then
+if systemextensionsctl list | grep -q "\.SimulatorCamera\.Extension"; then
     ok "Extension is registered with macOS."
 else
     warn "Extension not registered yet."
