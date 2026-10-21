@@ -1,6 +1,6 @@
 cask "simulatorcamera" do
-  version "1.0.0"
-  sha256 "REPLACE_WITH_ACTUAL_DMG_SHA256_ON_RELEASE"
+  version "1.1.0"
+  sha256 "1c147504d744d4a27bdeb2f2bcbc04768436a852ff54c3c5f43d44e8b5b51e11"
 
   url "https://github.com/dautovri/SimulatorCamera/releases/download/v#{version}/SimulatorCamera-#{version}.dmg",
       verified: "github.com/dautovri/SimulatorCamera/"
