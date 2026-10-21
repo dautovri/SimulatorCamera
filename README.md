@@ -183,10 +183,13 @@ Open the SimulatorCamera Mac app:
 
 ## Driving from the command line
 
-`simcamctl` is bundled with the app and can be symlinked into `$PATH`:
+`simcamctl` is **not** bundled in the app or the release download. Build it
+from source and put it on your `$PATH`:
 
 ```bash
-ln -s /Applications/SimulatorCamera.app/Contents/MacOS/simcamctl /usr/local/bin/simcamctl
+xcodegen generate
+xcodebuild -project SimulatorCamera.xcodeproj -scheme simcamctl -configuration Release build
+# copy the built `simcamctl` (see BUILT_PRODUCTS_DIR) to /usr/local/bin
 
 simcamctl ping
 # extension reachable: "SimulatorCamera Virtual" source=test pattern streaming=yes

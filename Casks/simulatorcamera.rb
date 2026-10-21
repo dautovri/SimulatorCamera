@@ -18,8 +18,6 @@ cask "simulatorcamera" do
 
   app "SimulatorCamera.app"
 
-  binary "#{appdir}/SimulatorCamera.app/Contents/MacOS/simcamctl"
-
   uninstall delete: [
     "/Applications/SimulatorCamera.app",
   ]

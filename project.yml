@@ -138,7 +138,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(SIMCAM_BUNDLE_PREFIX).simcamctl
         PRODUCT_NAME: simcamctl
         CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: simcamctl/simcamctl.entitlements
         ENABLE_HARDENED_RUNTIME: YES
+        GENERATE_INFOPLIST_FILE: YES
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+        INFOPLIST_KEY_NSCameraUsageDescription: simcamctl feed --camera streams your Mac camera into the iOS Simulator.
         SKIP_INSTALL: NO
 
   # Logic tests for the wire contract shared by all three binaries. Compiles
