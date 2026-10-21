@@ -7,6 +7,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-21
+
+First tagged, notarized release (1.0.0 was never tagged).
+
 ### Added
 - Optional socket-owned host capture: running injected sessions acquire hardware
   on demand and release it on stop or process exit. Supervised host feeds also

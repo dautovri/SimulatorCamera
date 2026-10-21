@@ -57,6 +57,16 @@ mkdir -p "$BUILD_DIR" "$DIST_DIR"
 # nested .systemextension automatically when CODE_SIGN_STYLE=Automatic and
 # DEVELOPMENT_TEAM is set.
 
+# Optional: let xcodebuild create missing provisioning profiles via an App Store
+# Connect API key (ASC_KEY_PATH / ASC_KEY_ID / ASC_ISSUER_ID).
+AUTH_ARGS=()
+if [[ -n "${ASC_KEY_PATH:-}" ]]; then
+    AUTH_ARGS=(-allowProvisioningUpdates
+        -authenticationKeyPath "$ASC_KEY_PATH"
+        -authenticationKeyID "${ASC_KEY_ID:?ASC_KEY_ID required}"
+        -authenticationKeyIssuerID "${ASC_ISSUER_ID:?ASC_ISSUER_ID required}")
+fi
+
 echo "▶︎ Archiving $APP_NAME $VERSION"
 xcodebuild \
     -project "$PROJECT" \
@@ -67,11 +77,25 @@ xcodebuild \
     MARKETING_VERSION="$VERSION" \
     CURRENT_PROJECT_VERSION="$VERSION" \
     DEVELOPMENT_TEAM="${APPLE_TEAM_ID:-}" \
+    ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
     archive 2>&1 | (xcpretty --simple || cat)
 
 # ── Export with Developer ID ────────────────────────────────────────────────
 
 echo "▶︎ Exporting .app with Developer ID signing"
+# Optional manual signing: set PROFILE_HOST / PROFILE_EXT to the names of installed
+# Developer ID provisioning profiles for the app and the Camera Extension.
+SIGN_STYLE="automatic"
+PROFILE_MAP=""
+if [[ -n "${PROFILE_HOST:-}" && -n "${PROFILE_EXT:-}" ]]; then
+    SIGN_STYLE="manual"
+    PROFILE_MAP="<key>signingCertificate</key><string>Developer ID Application</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>com.dautov.SimulatorCamera</key><string>${PROFILE_HOST}</string>
+        <key>com.dautov.SimulatorCamera.Extension</key><string>${PROFILE_EXT}</string>
+    </dict>"
+fi
 cat > "$BUILD_DIR/exportOptions.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -79,8 +103,9 @@ cat > "$BUILD_DIR/exportOptions.plist" <<EOF
 <dict>
     <key>method</key>                  <string>developer-id</string>
     <key>teamID</key>                  <string>${APPLE_TEAM_ID:-}</string>
-    <key>signingStyle</key>            <string>automatic</string>
+    <key>signingStyle</key>            <string>${SIGN_STYLE}</string>
     <key>stripSwiftSymbols</key>       <true/>
+    ${PROFILE_MAP}
 </dict>
 </plist>
 EOF
@@ -89,7 +114,8 @@ xcodebuild \
     -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
     -exportPath "$EXPORT_PATH" \
-    -exportOptionsPlist "$BUILD_DIR/exportOptions.plist" 2>&1 | (xcpretty --simple || cat)
+    -exportOptionsPlist "$BUILD_DIR/exportOptions.plist" \
+    ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} 2>&1 | (xcpretty --simple || cat)
 
 APP_BUNDLE="$EXPORT_PATH/$APP_NAME.app"
 
@@ -110,11 +136,11 @@ if [[ ! -d "$EXTENSION_BUNDLE" ]]; then
 fi
 
 # Outer .app must have Developer ID signature.
-codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1 | grep -q "Authority=Developer ID Application" \
+grep -q "Authority=Developer ID Application" <(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1) \
     || { echo "ERROR: outer .app not signed with Developer ID" >&2; exit 1; }
 
 # Nested extension must too.
-codesign -dv --verbose=4 "$EXTENSION_BUNDLE" 2>&1 | grep -q "Authority=Developer ID Application" \
+grep -q "Authority=Developer ID Application" <(codesign -dv --verbose=4 "$EXTENSION_BUNDLE" 2>&1) \
     || { echo "ERROR: nested extension not signed with Developer ID" >&2; exit 1; }
 
 echo "✓ both binaries signed with Developer ID"
@@ -163,12 +189,16 @@ hdiutil create \
 # on the DMG — not just on the .app inside).
 if [[ -z "${SKIP_NOTARIZE:-}" ]]; then
     codesign --sign "$APPLE_DEVELOPER_ID" --timestamp "$DMG_OUT"
-    xcrun notarytool submit "$DMG_OUT" \
-        --apple-id "${APPLE_ID:-}" \
-        --password "${APPLE_APP_PASSWORD:-}" \
-        --team-id "${APPLE_TEAM_ID:-}" \
-        --wait || true
-    xcrun stapler staple "$DMG_OUT" || true
+    if [[ -n "${KEYCHAIN_PROFILE:-}" ]]; then
+        xcrun notarytool submit "$DMG_OUT" --keychain-profile "$KEYCHAIN_PROFILE" --wait
+    else
+        xcrun notarytool submit "$DMG_OUT" \
+            --apple-id "${APPLE_ID:-}" \
+            --password "${APPLE_APP_PASSWORD:-}" \
+            --team-id "${APPLE_TEAM_ID:-}" \
+            --wait
+    fi
+    xcrun stapler staple "$DMG_OUT"
 fi
 
 echo "▶︎ Computing checksums"
