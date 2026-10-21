@@ -153,9 +153,33 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         return pb
     }
 
+    /// Camera capture delivers no frames — and no error — without TCC consent,
+    /// so resolve the authorization up front and fail loudly instead.
+    private func requireCameraAccess() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            return
+        case .notDetermined:
+            let answered = DispatchSemaphore(value: 0)
+            nonisolated(unsafe) var granted = false
+            AVCaptureDevice.requestAccess(for: .video) { granted = $0; answered.signal() }
+            answered.wait()
+            if !granted { fail(Self.cameraDeniedMessage) }
+        default:
+            fail(Self.cameraDeniedMessage)
+        }
+    }
+
+    private static let cameraDeniedMessage = """
+        camera access denied. Allow your terminal app (Terminal, iTerm, Warp, …) in \
+        System Settings → Privacy & Security → Camera, then run this command again. \
+        Alternatively pick "Mac Camera" in the SimulatorCamera app.
+        """
+
     private func startCamera() {
+        requireCameraAccess()
         guard let device = AVCaptureDevice.default(for: .video),
-              let input = try? AVCaptureDeviceInput(device: device) else { fail("no Mac camera available (or camera access denied)") }
+              let input = try? AVCaptureDeviceInput(device: device) else { fail("no Mac camera available") }
         let s = AVCaptureSession()
         s.sessionPreset = .hd1280x720
         s.addInput(input)

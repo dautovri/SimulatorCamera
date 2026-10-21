@@ -72,6 +72,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0158D6EC2042D196BF05FD65 /* simcamctl.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = simcamctl.entitlements; sourceTree = "<group>"; };
 		02097D9CA05CFC06EEBF4035 /* SimulatorCameraTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SimulatorCameraTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		06AC788CDB1F5546EF813A18 /* SimulatorCameraProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatorCameraProvider.swift; sourceTree = "<group>"; };
 		0C92C6072F6DEFA308054810 /* FrameSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameSource.swift; sourceTree = "<group>"; };
@@ -115,6 +116,7 @@
 				6104DACFC118A2330797BEC2 /* FeedCommand.swift */,
 				34DBFC0A082BB7CE216717D6 /* main.swift */,
 				17E2492228A96A265315275C /* SimCamCLIClient.swift */,
+				0158D6EC2042D196BF05FD65 /* simcamctl.entitlements */,
 			);
 			path = simcamctl;
 			sourceTree = "<group>";
@@ -512,9 +514,13 @@
 		285468F9A97DC35EA929EB78 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = simcamctl/simcamctl.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "simcamctl feed --camera streams your Mac camera into the iOS Simulator.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -602,9 +608,13 @@
 		49BC6C74360D1D21B0C20FD8 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = simcamctl/simcamctl.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "simcamctl feed --camera streams your Mac camera into the iOS Simulator.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
