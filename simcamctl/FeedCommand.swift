@@ -11,6 +11,7 @@
 import AVFoundation
 import CoreImage
 import Foundation
+import os
 
 final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     enum Source {
@@ -25,7 +26,8 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var still: CVPixelBuffer?
     private var tick = 0
     private var session: AVCaptureSession?
-    private var written = 0
+    // Bumped from the capture queue, read from the feed timer queue.
+    private let written = OSAllocatedUnfairLock(initialState: 0)
     private var parentWatch: DispatchSourceRead?
 
     func run(_ source: Source, seconds: Double?) -> Never {
@@ -57,7 +59,7 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             case .pattern: write(pattern())
             case .qr, .image: if let still { write(still) }
             }
-            if tick % 150 == 0 { print("feeding \(store.description(written: written))"); fflush(stdout) }
+            if tick % 150 == 0 { print("feeding \(store.description(written: written.withLock { $0 }))"); fflush(stdout) }
             tick += 1
         }
         timer.resume()
@@ -67,13 +69,15 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     }
 
     private func finish() -> Never {
-        print("done: \(written) frames")
+        print("done: \(written.withLock { $0 }) frames")
         exit(0)
     }
 
+    /// Runtime failures exit 1 (generic error); exit 3 is reserved for invalid
+    /// arguments, which main.swift reports before a feed ever starts.
     private func fail(_ message: String) -> Never {
         FileHandle.standardError.write(Data("error: \(message)\n".utf8))
-        exit(3)
+        exit(1)
     }
 
     private func write(_ pb: CVPixelBuffer, sourceKind: UInt32 = 0) {
@@ -83,7 +87,7 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         store.write(width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb),
                     bytesPerRow: CVPixelBufferGetBytesPerRow(pb), bgra: base, sourceKind: sourceKind,
                     time: Date().timeIntervalSince1970)
-        written += 1
+        written.withLock { $0 += 1 }
     }
 
     // MARK: Sources
@@ -161,14 +165,21 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             return
         case .notDetermined:
             let answered = DispatchSemaphore(value: 0)
-            nonisolated(unsafe) var granted = false
-            AVCaptureDevice.requestAccess(for: .video) { granted = $0; answered.signal() }
-            answered.wait()
-            if !granted { fail(Self.cameraDeniedMessage) }
+            AVCaptureDevice.requestAccess(for: .video) { _ in answered.signal() }
+            // An unattended run (script, CI, ssh into a logged-in Mac) would
+            // otherwise wait forever on a prompt nobody sees.
+            if answered.wait(timeout: .now() + Self.promptTimeout) == .timedOut {
+                fail("timed out waiting for the camera permission prompt. Answer it on the Mac's screen, or allow your terminal app in System Settings → Privacy & Security → Camera, then run this command again.")
+            }
+            if AVCaptureDevice.authorizationStatus(for: .video) != .authorized { fail(Self.cameraDeniedMessage) }
+        case .restricted:
+            fail("camera access is restricted by a system policy (Screen Time or a configuration profile) and cannot be granted from System Settings.")
         default:
             fail(Self.cameraDeniedMessage)
         }
     }
+
+    private static let promptTimeout: DispatchTimeInterval = .seconds(60)
 
     private static let cameraDeniedMessage = """
         camera access denied. Allow your terminal app (Terminal, iTerm, Warp, …) in \
@@ -177,9 +188,11 @@ final class FeedCommand: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         """
 
     private func startCamera() {
+        // Look for hardware first so a Mac without a camera says so, instead
+        // of asking for (or complaining about) a permission it can't use.
+        guard let device = AVCaptureDevice.default(for: .video) else { fail("no Mac camera available") }
         requireCameraAccess()
-        guard let device = AVCaptureDevice.default(for: .video),
-              let input = try? AVCaptureDeviceInput(device: device) else { fail("no Mac camera available") }
+        guard let input = try? AVCaptureDeviceInput(device: device) else { fail("could not open the Mac camera \(device.localizedName)") }
         let s = AVCaptureSession()
         s.sessionPreset = .hd1280x720
         s.addInput(input)
