@@ -16,7 +16,10 @@ import Observation
 import OSLog
 import SystemExtensions
 
-private let extensionBundleIdentifier = "com.dautov.SimulatorCamera.Extension"
+/// The extension's bundle ID is the app's plus `.Extension` (see project.yml),
+/// so a build re-signed under another prefix needs no source edit.
+private let extensionBundleIdentifier =
+    (Bundle.main.bundleIdentifier ?? "com.dautov.SimulatorCamera") + ".Extension"
 
 @Observable
 @MainActor

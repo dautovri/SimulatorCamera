@@ -38,59 +38,53 @@ virtual camera through standard `AVFoundation`. **Your existing
 
 ## Install
 
-> **Status: pre-release. Build from source.** There is no published
-> binary, no Homebrew cask, and no App Store listing yet. Distribution is
-> still being decided — macOS system extensions have real constraints on
-> how they can be shipped to the public. For now you build and sign it
-> yourself with your own Apple developer account.
+**1. Get the Mac app.** Download the notarized `SimulatorCamera-<version>.dmg`
+from [Releases](../../releases), drag the app to `/Applications` and open it.
+Once the Homebrew tap is updated you can instead run:
 
-**1. Build the Mac companion app.**
+```bash
+brew install --cask dautovri/tap/simulatorcamera
+```
 
-Requires macOS 14+, Xcode 16+, and
-[XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`):
+> **No release published yet?** Until the first notarized release is on the
+> Releases page, the only option is building from source (below).
+
+**2. Click Activate, then approve** in System Settings → General → Login Items &
+Extensions. This is needed once per machine, and the app must live in
+`/Applications`.
+
+**3. Load the injection library into your Simulator app** — see
+[iOS Simulator apps](#ios-simulator-apps-xcode-2627) below. On Xcode 26/27
+simulators this step is required; there is nothing else to import or change in
+your app's code.
+
+> **Not a Swift Package.** SimulatorCamera has no `Package.swift` and cannot be
+> added via SPM, CocoaPods, or Carthage — on purpose. It is a macOS *system
+> extension* (Apple's `CMIOExtension` API) plus a Simulator-side library, not
+> something your app links.
+
+### Building from source
+
+Requires macOS 14+, Xcode 16+ and
+[XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
 
 ```bash
 git clone https://github.com/dautovri/SimulatorCamera.git
 cd SimulatorCamera
-xcodegen generate
-open SimulatorCamera.xcodeproj
 ```
 
-In Xcode, set your own signing team on both the **SimulatorCamera** and
-**SimulatorCameraExtension** targets, then build.
+1. In `project.yml`, change `SIMCAM_BUNDLE_PREFIX` to a prefix you own
+   (`com.dautov` is registered to another team) and set your signing team on
+   the **SimulatorCamera** and **SimulatorCameraExtension** targets.
+2. `xcodegen generate && open SimulatorCamera.xcodeproj`, then build.
+3. Move the built app to `/Applications` and launch it.
 
-**2. Move the built app to `/Applications` and launch it.**
-
-macOS refuses to activate a system extension from anywhere else — running
-straight from Xcode's build directory will fail.
-
-**3. Click Activate, then approve when System Settings prompts.**
-
-Approval lives in System Settings → General → Login Items & Extensions,
-and is needed once per machine.
-
-That's it. No Xcode integration, no `Info.plist` changes, no `#if`
-guards anywhere in your consuming app's code.
-
-> **Not a Swift Package.** SimulatorCamera has no `Package.swift` and
-> cannot be added via SPM, CocoaPods, or Carthage — on purpose. It's a
-> macOS *system extension* (Apple's `CMIOExtension` API), not a library
-> your app links. Install the Mac companion app with the `brew` command
-> above; your iOS app imports and links **nothing** from this project.
-
-**3. Run any iOS Simulator app that uses the camera.** Open it in Xcode
-16+, run on a Simulator, and `AVCaptureDevice.default(for: .video)`
-returns "SimulatorCamera Virtual."
-
-```swift
-// This — yes, exactly this — works in the iOS Simulator now:
-let session = AVCaptureSession()
-let device = AVCaptureDevice.default(for: .video)!
-let input = try AVCaptureDeviceInput(device: device)
-session.addInput(input)
-session.startRunning()
-// frames flow through your existing AVCaptureVideoDataOutput delegates
-```
+> **Heads-up:** macOS refuses to activate a system extension from a plain
+> Apple Development–signed build unless system extension developer mode is on
+> (`systemextensionsctl developer on`, which requires SIP to be disabled).
+> A Developer ID–signed, notarized build — what `scripts/build-release.sh`
+> produces — activates normally. See
+> [#6](https://github.com/dautovri/SimulatorCamera/issues/6).
 
 ## iOS Simulator apps (Xcode 26/27)
 

@@ -16,6 +16,11 @@ options:
 
 settings:
   base:
+    # Self-builders: change this one line (and set your signing team), then run
+    # `xcodegen generate`. Every bundle ID, the app group and the extension's
+    # Mach service name derive from it. (A command-line override does not work:
+    # Xcode resolves the embedded extension's file name without it.)
+    SIMCAM_BUNDLE_PREFIX: com.dautov
     SWIFT_VERSION: "5.10"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     MARKETING_VERSION: "1.0.0"
@@ -56,7 +61,7 @@ targets:
         NSSystemExtensionUsageDescription: SimulatorCamera installs a Camera Extension so the iOS Simulator can capture video without a physical device.
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.dautov.SimulatorCamera
+        PRODUCT_BUNDLE_IDENTIFIER: $(SIMCAM_BUNDLE_PREFIX).SimulatorCamera
         PRODUCT_NAME: SimulatorCamera
         CODE_SIGN_ENTITLEMENTS: SimulatorCamera/SimulatorCamera.entitlements
         CODE_SIGN_STYLE: Automatic
@@ -110,10 +115,10 @@ targets:
         # Reference: Apple's Camera Extension Xcode template TemplateInfo.plist
         # only declares CMIOExtension + NSSystemExtensionUsageDescription.
         CMIOExtension:
-          CMIOExtensionMachServiceName: $(TeamIdentifierPrefix)com.dautov.SimulatorCamera.Extension
+          CMIOExtensionMachServiceName: $(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.dautov.SimulatorCamera.Extension
+        PRODUCT_BUNDLE_IDENTIFIER: $(SIMCAM_BUNDLE_PREFIX).SimulatorCamera.Extension
         # sysextd requires the bundle file name to equal the bundle identifier
         PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER)
         CODE_SIGN_ENTITLEMENTS: SimulatorCameraExtension/SimulatorCameraExtension.entitlements
@@ -130,7 +135,7 @@ targets:
       - path: Shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.dautov.simcamctl
+        PRODUCT_BUNDLE_IDENTIFIER: $(SIMCAM_BUNDLE_PREFIX).simcamctl
         PRODUCT_NAME: simcamctl
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
@@ -147,7 +152,7 @@ targets:
       - path: Shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.dautov.SimulatorCamera.Tests
+        PRODUCT_BUNDLE_IDENTIFIER: $(SIMCAM_BUNDLE_PREFIX).SimulatorCamera.Tests
         CODE_SIGN_STYLE: Automatic
 
 schemes:

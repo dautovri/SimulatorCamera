@@ -8,7 +8,7 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>$(TeamIdentifierPrefix)com.dautov.SimulatorCamera</string>
+		<string>$(TeamIdentifierPrefix)$(SIMCAM_BUNDLE_PREFIX).SimulatorCamera</string>
 	</array>
 	<key>com.apple.security.device.camera</key>
 	<true/>
