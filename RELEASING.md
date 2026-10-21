@@ -60,7 +60,8 @@ There is no iOS Swift Package to release — the SDK was removed in v1.0.0.
    a **draft** GitHub Release with the `.dmg`, `.zip`, and checksums.
 
 5. **Update the Homebrew cask**
-   - Grab the DMG sha256 from `dist/SimulatorCamera-X.Y.Z.sha256` (or the
+   - Grab the DMG sha256 from the Release workflow's job summary (also in
+     `dist/SimulatorCamera-X.Y.Z.sha256` and the
      Release page).
    - Commit the updated `Casks/simulatorcamera.rb` to the tap repo
      (`dautovri/homebrew-tap`):

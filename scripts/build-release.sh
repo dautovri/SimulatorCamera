@@ -102,7 +102,8 @@ fi
 
 echo "▶︎ Verifying signature chain"
 
-EXTENSION_BUNDLE="$APP_BUNDLE/Contents/Library/SystemExtensions/com.dautov.SimulatorCamera.Extension.systemextension"
+APP_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP_BUNDLE/Contents/Info.plist")"
+EXTENSION_BUNDLE="$APP_BUNDLE/Contents/Library/SystemExtensions/$APP_BUNDLE_ID.Extension.systemextension"
 if [[ ! -d "$EXTENSION_BUNDLE" ]]; then
     echo "ERROR: bundled extension not found at $EXTENSION_BUNDLE" >&2
     exit 1
