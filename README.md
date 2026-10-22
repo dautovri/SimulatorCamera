@@ -34,7 +34,14 @@ virtual camera through standard `AVFoundation`. **Your existing
 
 ## Demo
 
-[hero GIF lands here in v1.0.0 release]
+<p align="center">
+  <img src="assets/demo.gif" alt="An iOS Simulator scanner app receiving a test pattern, a QR code it decodes, and an image from SimulatorCamera" width="300">
+</p>
+
+An ordinary scanner app in the iOS Simulator: `AVCaptureDevice` returns
+"SimulatorCamera", the preview shows whatever source you pick, and the QR code
+is decoded through `AVCaptureMetadataOutput`. The app imports nothing from this
+project. [Full-quality video](assets/demo.mp4).
 
 ## Install
 
